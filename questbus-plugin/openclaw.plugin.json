@@ -1,0 +1,18 @@
+{
+  "id": "questbus-receiver",
+  "name": "QuestBus Receiver",
+  "description": "Receives QuestBus push messages from Dr. Quest (do-host1) via HTTP and injects them as system events into the agent session.",
+  "version": "1.0.0",
+  "configSchema": {
+    "jsonSchema": {
+      "type": "object",
+      "properties": {
+        "token": {
+          "type": "string",
+          "description": "Bearer token for authenticating incoming push requests. Defaults to env SQUIRRELBUS_TOKEN or 'clawmeh'."
+        }
+      },
+      "additionalProperties": false
+    }
+  }
+}

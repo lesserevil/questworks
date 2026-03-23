@@ -1,0 +1,10 @@
+node_modules/
+*.log
+workqueue/results/*
+!workqueue/results/.gitkeep
+questbus/bus.jsonl
+workqueue/alerts.jsonl
+workqueue/decision-log.jsonl
+workqueue/state-*.json
+.env
+.secrets.env
