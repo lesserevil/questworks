@@ -8,3 +8,4 @@ workqueue/decision-log.jsonl
 workqueue/state-*.json
 .env
 .secrets.env
+*.db\n*.db-shm\n*.db-wal\n.env\nnode_modules/
