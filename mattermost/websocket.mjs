@@ -1,121 +1,98 @@
 import WebSocket from 'ws';
 
-const CONV_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const TTL_SECONDS = 5 * 60;
 
 /**
- * Connects to the Mattermost WebSocket API and routes incoming posts to active
- * conversation handlers. Only slash commands start new conversations — the WS
- * listener only handles continuation messages.
+ * Connect to Mattermost WebSocket and route incoming posts to active
+ * conversation handlers. Only handles continuation messages — slash commands
+ * start new conversations via POST /slash.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {(db: any, post: any) => Promise<void>} handleConversationReply
  */
-export class MattermostWebSocket {
-  constructor(mmUrl, token, db, onMessage) {
-    this.wsUrl = mmUrl.replace(/^https:\/\//, 'wss://').replace(/^http:\/\//, 'ws://') + '/api/v4/websocket';
-    this.httpUrl = mmUrl;
-    this.token = token;
-    this.db = db;
-    this.onMessage = onMessage; // async (userId, channelId, text) => void
-    this.botUserId = null;
-    this._ws = null;
-    this._reconnectDelay = 2000;
-    this._stopped = false;
+export async function startWebSocket(db, handleConversationReply) {
+  const mmUrl = process.env.MM_URL;
+  if (!mmUrl) {
+    console.warn('[ws] MM_URL not set — skipping WebSocket');
+    return;
   }
 
-  async start() {
-    // Fetch bot user ID once so we can ignore our own posts
-    try {
-      const resp = await fetch(`${this.httpUrl}/api/v4/users/me`, {
-        headers: { Authorization: `Bearer ${this.token}` },
-      });
-      if (resp.ok) {
-        const me = await resp.json();
-        this.botUserId = me.id;
-        console.log(`[ws] Bot user ID: ${this.botUserId}`);
-      }
-    } catch (err) {
-      console.warn('[ws] Could not fetch bot user ID:', err.message);
+  const tokenRow = db.prepare("SELECT value FROM config WHERE key='mm_bot_token'").get();
+  const token = tokenRow?.value || process.env.MM_BOT_TOKEN;
+  if (!token) {
+    console.warn('[ws] No mm_bot_token in config table and MM_BOT_TOKEN not set — skipping WebSocket');
+    return;
+  }
+
+  const wsUrl = mmUrl.replace(/^http/, 'ws') + '/api/v4/websocket';
+
+  let botUserId = null;
+  try {
+    const resp = await fetch(`${mmUrl}/api/v4/users/me`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (resp.ok) {
+      const me = await resp.json();
+      botUserId = me.id;
+      console.log(`[ws] Bot user: ${me.username} (${me.id})`);
     }
-
-    this._connect();
+  } catch (err) {
+    console.warn('[ws] Could not fetch bot user ID:', err.message);
   }
 
-  stop() {
-    this._stopped = true;
-    if (this._ws) {
-      this._ws.terminate();
-      this._ws = null;
-    }
-  }
+  let stopped = false;
+  let reconnectDelay = 2000;
 
-  _connect() {
-    if (this._stopped) return;
-
-    console.log(`[ws] Connecting to ${this.wsUrl}`);
-    const ws = new WebSocket(this.wsUrl);
-    this._ws = ws;
+  function connect() {
+    if (stopped) return;
+    console.log(`[ws] Connecting to ${wsUrl}`);
+    const ws = new WebSocket(wsUrl);
 
     ws.on('open', () => {
       console.log('[ws] Connected');
-      this._reconnectDelay = 2000;
-      // Authenticate
-      ws.send(JSON.stringify({
-        seq: 1,
-        action: 'authentication_challenge',
-        data: { token: this.token },
-      }));
+      reconnectDelay = 2000;
+      ws.send(JSON.stringify({ seq: 1, action: 'authentication_challenge', data: { token } }));
     });
 
-    ws.on('message', (raw) => {
+    ws.on('message', async (raw) => {
       let event;
       try { event = JSON.parse(raw); } catch { return; }
-      this._handleEvent(event);
+      if (event.event !== 'posted') return;
+
+      let post;
+      try { post = JSON.parse(event.data?.post || '{}'); } catch { return; }
+
+      const { user_id, channel_id, message, type } = post;
+      if (type && type !== '') return; // skip system messages
+      if (!user_id || user_id === botUserId) return;
+      if (!message || !channel_id) return;
+
+      // Only route if there is a non-expired active conversation
+      const conv = db.prepare(
+        'SELECT updated_at FROM conversations WHERE user_id=? AND channel_id=?'
+      ).get(user_id, channel_id);
+      if (!conv) return;
+
+      if ((Math.floor(Date.now() / 1000) - conv.updated_at) > TTL_SECONDS) {
+        db.prepare('DELETE FROM conversations WHERE user_id=? AND channel_id=?').run(user_id, channel_id);
+        return;
+      }
+
+      handleConversationReply(db, post).catch(err => {
+        console.error('[ws] handleConversationReply error:', err.message);
+      });
     });
 
-    ws.on('error', (err) => {
-      console.error('[ws] Error:', err.message);
-    });
+    ws.on('error', (err) => console.error('[ws] Error:', err.message));
 
     ws.on('close', () => {
-      if (this._stopped) return;
-      console.log(`[ws] Disconnected — reconnecting in ${this._reconnectDelay}ms`);
-      setTimeout(() => this._connect(), this._reconnectDelay);
-      this._reconnectDelay = Math.min(this._reconnectDelay * 2, 30000);
+      if (stopped) return;
+      console.log(`[ws] Disconnected — reconnecting in ${reconnectDelay}ms`);
+      setTimeout(connect, reconnectDelay);
+      reconnectDelay = Math.min(reconnectDelay * 2, 30000);
     });
   }
 
-  _handleEvent(event) {
-    if (event.event !== 'posted') return;
-
-    let post;
-    try {
-      post = JSON.parse(event.data?.post || '{}');
-    } catch { return; }
-
-    const { user_id, channel_id, message, type } = post;
-
-    // Ignore system messages and our own posts
-    if (type && type !== '') return;
-    if (!user_id || user_id === this.botUserId) return;
-    if (!message || !channel_id) return;
-
-    // Only route if there is an active (non-expired) conversation
-    const conv = this._getActiveConversation(user_id, channel_id);
-    if (!conv) return;
-
-    this.onMessage(user_id, channel_id, message.trim()).catch(err => {
-      console.error('[ws] onMessage error:', err.message);
-    });
-  }
-
-  _getActiveConversation(userId, channelId) {
-    const conv = this.db.prepare(
-      'SELECT * FROM conversations WHERE user_id=? AND channel_id=? ORDER BY updated_at DESC LIMIT 1'
-    ).get(userId, channelId);
-    if (!conv) return null;
-    const age = Date.now() - new Date(conv.updated_at).getTime();
-    if (age > CONV_TTL_MS) {
-      this.db.prepare('DELETE FROM conversations WHERE id=?').run(conv.id);
-      return null;
-    }
-    return conv;
-  }
+  connect();
+  return { stop() { stopped = true; } };
 }

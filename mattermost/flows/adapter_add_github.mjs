@@ -1,7 +1,6 @@
-import { encrypt, isEncryptionAvailable, maskToken } from '../crypto.mjs';
+import { isEncryptionAvailable, maskToken, encryptJson } from '../crypto.mjs';
 import { saveAdapterConfig } from '../../db/adapters.mjs';
 import { GitHubAdapter } from '../../adapters/github.mjs';
-import { encryptJson } from '../crypto.mjs';
 
 function isSkip(msg) {
   const t = (msg || '').trim().toLowerCase();
@@ -48,21 +47,15 @@ export async function handle(ctx) {
         return { reply: 'Token cannot be empty. Please paste your GitHub personal access token:', step: 2, data };
       }
       return {
-        reply: 'What label marks issues for this team? (required — only labeled issues will sync)',
+        reply: 'Got it, token received. Optional: only sync issues with a specific label? (press Enter to skip)',
         step: 3,
-        data: { ...data, token: encrypt(token), token_masked: maskToken(token) },
+        data: { ...data, token, token_masked: maskToken(token) },
       };
     }
 
     case 3: {
-      const label = message.trim();
-      if (!label) {
-        return {
-          reply: 'A label is required — without one, no issues will sync. What label should we use?',
-          step: 3,
-          data,
-        };
-      }
+      const raw = message.trim();
+      const label = (!raw || raw.toLowerCase() === 'skip') ? null : raw;
       const slug = data.repo.replace('/', '-');
       return {
         reply: `Optional: give this adapter a name? (default: \`github-${slug}\`)`,
@@ -75,34 +68,30 @@ export async function handle(ctx) {
       const slug = data.repo.replace('/', '-');
       const name = isSkip(message) ? `github-${slug}` : message.trim();
 
-      const configObj = {
-        repo: data.repo,
-        token: data.token,       // encrypted
-        token_masked: data.token_masked,
-        label_filter: data.label_filter || null,
-      };
-
+      // Store plaintext token in configObj — the outer encryptJson protects it at rest
       saveAdapterConfig(db, {
         id: name,
         type: 'github',
         name,
-        configEncrypted: encryptJson(configObj),
+        configEncrypted: encryptJson({
+          repo: data.repo,
+          token: data.token,
+          token_masked: data.token_masked,
+          label_filter: data.label_filter || null,
+        }),
       });
 
-      // Instantiate and register
-      const { decrypt } = await import('../crypto.mjs');
-      const liveConfig = {
+      adapters.set(name, new GitHubAdapter(name, {
         repo: data.repo,
-        token: decrypt(data.token),
+        token: data.token,
         label_filter: data.label_filter || null,
-      };
-      adapters.set(name, new GitHubAdapter(name, liveConfig));
+      }));
 
       if (scheduler && !scheduler._timer) scheduler.start();
       scheduler.syncAdapter(name).catch(err => console.error(`[slash] initial sync failed: ${err.message}`));
 
       return {
-        reply: `✅ GitHub adapter added — syncing \`${data.repo}\`, label: \`${data.label_filter}\``,
+        reply: `✅ GitHub adapter **${name}** added!\nRepo: \`${data.repo}\` | Token: \`${data.token_masked}\`${data.label_filter ? ` | Label: \`${data.label_filter}\`` : ''}\nSyncing in the background...`,
         done: true,
       };
     }

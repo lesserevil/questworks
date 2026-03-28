@@ -1,31 +1,61 @@
-adapters:
-  - id: github-quest
-    type: github
-    config:
-      repo: owner/repo
-      token: $GITHUB_TOKEN
-      label_filter: "quest-team"
-  - id: beads-main
-    type: beads
-    config:
-      endpoint: $BEADS_URL
-      token: $BEADS_TOKEN
-      board_id: $BEADS_BOARD_ID
-  - id: jira-main
-    type: jira
-    config:
-      url: $JIRA_URL
-      token: $JIRA_TOKEN
-      project: $JIRA_PROJECT
-
-mattermost:
-  url: $MM_URL
-  token: $MM_BOT_TOKEN
-  channel: paperwork
-
-sync:
-  interval_seconds: 60
-
-server:
-  port: 8788
-  auth_token: $QUESTWORKS_TOKEN
+# QuestWorks Configuration Reference
+#
+# As of v2.0, all user-configurable settings (adapters, notification channel,
+# sync interval) are stored in SQLite and managed via Mattermost slash commands
+# (/qw adapter add github, /qw config set channel, etc.)
+#
+# This file is documentation only — it is NOT read at runtime.
+#
+# ── Required environment variables ───────────────────────────────────────────
+#
+#   MM_URL           Mattermost server URL (e.g. https://mm.yourcompany.com)
+#   MM_BOT_TOKEN     Bot user personal access token
+#   QW_PUBLIC_URL    Public URL of this QuestWorks instance
+#                    Used to register the /qw slash command with Mattermost
+#
+# ── Optional environment variables ───────────────────────────────────────────
+#
+#   MM_TEAM_ID         Mattermost team ID (auto-detected if not set)
+#   MM_CHANNEL         Default notification channel name (default: paperwork)
+#   QW_ENCRYPTION_KEY  32-byte AES key as hex string.
+#                      Auto-generated on first run (saved to .qw_key).
+#                      Keep .qw_key safe — back it up alongside your DB!
+#   QUESTWORKS_TOKEN   Bearer token for REST API (no auth if unset)
+#   QUESTWORKS_DB      Path to SQLite database (default: ./questworks.db)
+#   PORT               HTTP port (default: 8788)
+#
+# ── Adapter management (via /qw slash commands) ───────────────────────────────
+#
+#   /qw adapter add github   → interactive wizard (repo, PAT, label, name)
+#   /qw adapter add beads    → interactive wizard (endpoint, token, board, name)
+#   /qw adapter add jira     → interactive wizard (url, token, project, name)
+#   /qw adapter list         → list configured adapters (tokens masked)
+#   /qw adapter remove       → interactively remove an adapter
+#   /qw adapter sync         → manually trigger sync for an adapter
+#
+# ── Config management (via /qw slash commands) ───────────────────────────────
+#
+#   /qw config set channel         → set Mattermost notification channel
+#   /qw config set sync-interval   → set sync interval in seconds
+#   /qw config show                → display all current config values
+#
+# ── Task management (via /qw slash commands) ─────────────────────────────────
+#
+#   /qw task list    → show open tasks
+#   /qw task claim   → claim a task
+#   /qw task done    → mark a task complete
+#   /qw task block   → mark a task as blocked
+#
+# ── Legacy config.yaml fields (still supported for bootstrapping) ─────────────
+#
+# mattermost:
+#   url: $MM_URL          # same as MM_URL env var
+#   token: $MM_BOT_TOKEN  # same as MM_BOT_TOKEN env var
+#   channel: paperwork    # overridden by /qw config set channel
+#
+# sync:
+#   interval_seconds: 60  # overridden by /qw config set sync-interval
+#
+# server:
+#   port: 8788
+#   auth_token: $QUESTWORKS_TOKEN

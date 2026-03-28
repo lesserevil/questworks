@@ -172,5 +172,36 @@ app.listen(PORT, async () => {
     bot.connectWebSocket(async ({ userId, channelId, message }) => {
       await handleWebSocketMessage(db, adapters, scheduler, notifier, bot, userId, channelId, message);
     });
+
+    // Welcome message on first startup (no adapters configured yet)
+    const adapterCount = loadAdapterConfigs(db).length;
+    if (adapterCount === 0) {
+      const notifyChannel = getConfig(db, 'notification_channel') || (mmConfig.channel || 'paperwork');
+      // Retry briefly to let WebSocket settle
+      setTimeout(async () => {
+        try {
+          await notifier.onNewTask({
+            id: 'welcome',
+            title: 'QuestWorks is ready',
+            description: 'Type `/qw adapter add github` (or `beads`/`jira`) to connect your first task source.',
+            source: 'questworks',
+            external_id: 'welcome',
+            labels: [],
+            priority: 0,
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+            metadata: {},
+          });
+        } catch {}
+        // Simpler fallback: direct post
+        const teamId = process.env.MM_TEAM_ID;
+        const channelId = await bot.getChannelIdByName(teamId, notifyChannel).catch(() => null);
+        if (channelId) {
+          await bot.post(channelId,
+            'QuestWorks is ready. Type `/qw adapter add github` (or `beads`/`jira`) to connect your first task source.'
+          ).catch(() => {});
+        }
+      }, 3000);
+    }
   }
 });
