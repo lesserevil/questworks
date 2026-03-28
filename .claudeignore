@@ -1,0 +1,9 @@
+node_modules/
+*.db
+*.db-shm
+*.db-wal
+workqueue/results/*
+questbus/bus.jsonl
+workqueue/alerts.jsonl
+workqueue/decision-log.jsonl
+workqueue/state-*.json

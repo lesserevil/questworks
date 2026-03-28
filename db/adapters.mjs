@@ -1,9 +1,7 @@
 export function saveAdapterConfig(db, { id, type, name, configEncrypted }) {
-  const now = new Date().toISOString();
-  db.prepare(`
-    INSERT OR REPLACE INTO adapters_config (id, type, name, config_json_encrypted, created_at)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(id, type, name, configEncrypted, now);
+  db.prepare(
+    'INSERT OR REPLACE INTO adapters_config (id, type, name, config_encrypted) VALUES (?, ?, ?, ?)'
+  ).run(id, type, name, configEncrypted);
 }
 
 export function loadAdapterConfigs(db) {

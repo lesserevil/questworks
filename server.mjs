@@ -13,14 +13,16 @@ import { BeadsAdapter } from './adapters/beads.mjs';
 import { SyncScheduler } from './sync/scheduler.mjs';
 import { MattermostNotifier } from './mattermost/notify.mjs';
 import { MattermostBot } from './mattermost/bot.mjs';
-import { createSlashRouter, handleWebSocketMessage } from './mattermost/slash.mjs';
+import { createSlashRouter, handleConversationReply } from './mattermost/slash.mjs';
 import { decryptJson } from './mattermost/crypto.mjs';
+import { startWebSocket } from './mattermost/websocket.mjs';
+import { ManualAdapter } from './adapters/manual.mjs';
 import { createTaskRoutes } from './routes/tasks.mjs';
 import { createAdapterRoutes } from './routes/adapters.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 
-const ADAPTER_TYPES = { github: GitHubAdapter, jira: JiraAdapter, beads: BeadsAdapter };
+const ADAPTER_TYPES = { github: GitHubAdapter, jira: JiraAdapter, beads: BeadsAdapter, manual: ManualAdapter };
 
 // --- Config ---
 function loadConfig() {
@@ -50,7 +52,7 @@ function loadDbAdapters(db, adapters) {
   const rows = loadAdapterConfigs(db);
   for (const row of rows) {
     try {
-      const config = decryptJson(row.config_json_encrypted);
+      const config = decryptJson(row.config_encrypted);
       const Cls = ADAPTER_TYPES[row.type];
       if (!Cls) { console.warn(`[adapters] Unknown type in DB: ${row.type}`); continue; }
       adapters.set(row.id, new Cls(row.id, config));
@@ -65,6 +67,7 @@ function loadDbAdapters(db, adapters) {
 const config = loadConfig();
 const DB_PATH = process.env.QUESTWORKS_DB || join(__dirname, 'questworks.db');
 const db = initDb(DB_PATH);
+db.exec(readFileSync(join(__dirname, 'db', 'schema-v2.sql'), 'utf8'));
 
 // Build adapter registry: config.yaml first, then DB (DB overrides yaml for same ID)
 const adapters = buildAdapters(config.adapters);
@@ -99,7 +102,7 @@ app.use((req, res, next) => {
 // Routes
 app.use('/tasks', createTaskRoutes(db, notifier, adapters));
 app.use('/adapters', createAdapterRoutes(db, adapters, scheduler));
-app.use('/slash', createSlashRouter(db, adapters, scheduler, notifier, bot));
+app.use('/slash', createSlashRouter(db));
 
 app.get('/health', (req, res) => {
   res.json({
@@ -147,61 +150,10 @@ app.get('/', (req, res) => {
 });
 
 const PORT = process.env.PORT || config.server?.port || 8788;
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`[questworks] Server listening on port ${PORT}`);
   console.log(`[questworks] DB: ${DB_PATH}`);
   console.log(`[questworks] Adapters: ${[...adapters.keys()].join(', ') || 'none'}`);
-
   if (adapters.size > 0) scheduler.start();
-
-  if (bot.enabled) {
-    await bot.init();
-
-    // Register /qw slash command with all teams
-    const publicUrl = process.env.QW_PUBLIC_URL || getConfig(db, 'qw_public_url');
-    if (publicUrl) {
-      const teams = await bot.getTeams();
-      for (const team of (Array.isArray(teams) ? teams : [])) {
-        await bot.registerSlashCommand(team.id, publicUrl);
-      }
-    } else {
-      console.warn('[bot] QW_PUBLIC_URL not set — set it via env or /qw config to register slash commands');
-    }
-
-    // Connect WebSocket listener for conversation continuations
-    bot.connectWebSocket(async ({ userId, channelId, message }) => {
-      await handleWebSocketMessage(db, adapters, scheduler, notifier, bot, userId, channelId, message);
-    });
-
-    // Welcome message on first startup (no adapters configured yet)
-    const adapterCount = loadAdapterConfigs(db).length;
-    if (adapterCount === 0) {
-      const notifyChannel = getConfig(db, 'notification_channel') || (mmConfig.channel || 'paperwork');
-      // Retry briefly to let WebSocket settle
-      setTimeout(async () => {
-        try {
-          await notifier.onNewTask({
-            id: 'welcome',
-            title: 'QuestWorks is ready',
-            description: 'Type `/qw adapter add github` (or `beads`/`jira`) to connect your first task source.',
-            source: 'questworks',
-            external_id: 'welcome',
-            labels: [],
-            priority: 0,
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString(),
-            metadata: {},
-          });
-        } catch {}
-        // Simpler fallback: direct post
-        const teamId = process.env.MM_TEAM_ID;
-        const channelId = await bot.getChannelIdByName(teamId, notifyChannel).catch(() => null);
-        if (channelId) {
-          await bot.post(channelId,
-            'QuestWorks is ready. Type `/qw adapter add github` (or `beads`/`jira`) to connect your first task source.'
-          ).catch(() => {});
-        }
-      }, 3000);
-    }
-  }
+  startWebSocket(db, handleConversationReply);
 });
