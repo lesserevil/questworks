@@ -53,6 +53,12 @@ export class MattermostNotifier {
     });
   }
 
+  // Post a plain message to a channel by ID
+  async postMessage(channelId, text) {
+    if (!this.enabled) return null;
+    return this._post('/api/v4/posts', { channel_id: channelId, message: text });
+  }
+
   _formatNewTask(task) {
     return `**New task from ${task.source}**: ${task.title}`;
   }

@@ -1,19 +1,26 @@
 import express from 'express';
 import { readFileSync, existsSync } from 'fs';
 import { fileURLToPath } from 'url';
-import { dirname, join, resolve } from 'path';
+import { dirname, join } from 'path';
 import yaml from 'js-yaml';
 
 import { initDb } from './db/migrations.mjs';
+import { loadAdapterConfigs } from './db/adapters.mjs';
+import { getConfig } from './db/config.mjs';
 import { GitHubAdapter } from './adapters/github.mjs';
 import { JiraAdapter } from './adapters/jira.mjs';
 import { BeadsAdapter } from './adapters/beads.mjs';
 import { SyncScheduler } from './sync/scheduler.mjs';
 import { MattermostNotifier } from './mattermost/notify.mjs';
+import { MattermostBot } from './mattermost/bot.mjs';
+import { createSlashRouter, handleWebSocketMessage } from './mattermost/slash.mjs';
+import { decryptJson } from './mattermost/crypto.mjs';
 import { createTaskRoutes } from './routes/tasks.mjs';
 import { createAdapterRoutes } from './routes/adapters.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+
+const ADAPTER_TYPES = { github: GitHubAdapter, jira: JiraAdapter, beads: BeadsAdapter };
 
 // --- Config ---
 function loadConfig() {
@@ -30,14 +37,28 @@ function loadConfig() {
 
 function buildAdapters(adapterConfigs) {
   const map = new Map();
-  const ADAPTER_TYPES = { github: GitHubAdapter, jira: JiraAdapter, beads: BeadsAdapter };
   for (const ac of (adapterConfigs || [])) {
     const Cls = ADAPTER_TYPES[ac.type];
     if (!Cls) { console.warn(`[config] Unknown adapter type: ${ac.type}`); continue; }
     map.set(ac.id, new Cls(ac.id, ac.config || {}));
-    console.log(`[adapters] Registered ${ac.type} adapter: ${ac.id}`);
+    console.log(`[adapters] Registered ${ac.type} adapter from config.yaml: ${ac.id}`);
   }
   return map;
+}
+
+function loadDbAdapters(db, adapters) {
+  const rows = loadAdapterConfigs(db);
+  for (const row of rows) {
+    try {
+      const config = decryptJson(row.config_json_encrypted);
+      const Cls = ADAPTER_TYPES[row.type];
+      if (!Cls) { console.warn(`[adapters] Unknown type in DB: ${row.type}`); continue; }
+      adapters.set(row.id, new Cls(row.id, config));
+      console.log(`[adapters] Loaded ${row.type} adapter from DB: ${row.id}`);
+    } catch (err) {
+      console.warn(`[adapters] Failed to load DB adapter ${row.id}:`, err.message);
+    }
+  }
 }
 
 // --- Main ---
@@ -45,9 +66,19 @@ const config = loadConfig();
 const DB_PATH = process.env.QUESTWORKS_DB || join(__dirname, 'questworks.db');
 const db = initDb(DB_PATH);
 
+// Build adapter registry: config.yaml first, then DB (DB overrides yaml for same ID)
 const adapters = buildAdapters(config.adapters);
-const notifier = new MattermostNotifier(config.mattermost || {});
-const scheduler = new SyncScheduler(db, adapters, notifier, config.sync?.interval_seconds || 60);
+loadDbAdapters(db, adapters);
+
+const mmConfig = config.mattermost || {};
+const mmUrl = process.env.MM_URL || mmConfig.url || '';
+const mmToken = process.env.MM_BOT_TOKEN || mmConfig.token || '';
+
+const notifier = new MattermostNotifier({ url: mmUrl, token: mmToken, channel: mmConfig.channel });
+const bot = new MattermostBot({ url: mmUrl, token: mmToken });
+
+const syncInterval = config.sync?.interval_seconds || 60;
+const scheduler = new SyncScheduler(db, adapters, notifier, syncInterval);
 
 const app = express();
 app.use(express.json());
@@ -56,7 +87,8 @@ app.use(express.json());
 const AUTH_TOKEN = process.env.QUESTWORKS_TOKEN || config.server?.auth_token;
 app.use((req, res, next) => {
   if (!AUTH_TOKEN) return next();
-  if (req.path === '/health' || req.path === '/') return next();
+  // Public endpoints that don't require auth
+  if (req.path === '/health' || req.path === '/' || req.path.startsWith('/slash')) return next();
   const auth = req.headers.authorization;
   if (!auth || auth !== `Bearer ${AUTH_TOKEN}`) {
     return res.status(401).json({ error: 'unauthorized' });
@@ -67,6 +99,7 @@ app.use((req, res, next) => {
 // Routes
 app.use('/tasks', createTaskRoutes(db, notifier, adapters));
 app.use('/adapters', createAdapterRoutes(db, adapters, scheduler));
+app.use('/slash', createSlashRouter(db, adapters, scheduler, notifier, bot));
 
 app.get('/health', (req, res) => {
   res.json({
@@ -109,15 +142,35 @@ app.post('/bus/send', (req, res) => {
   res.json({ ok: true });
 });
 
-// Legacy: serve old dashboard as root if no index.html in dashboard/
 app.get('/', (req, res) => {
   res.json({ service: 'QuestWorks', version: '2.0.0', docs: '/health' });
 });
 
 const PORT = process.env.PORT || config.server?.port || 8788;
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`[questworks] Server listening on port ${PORT}`);
   console.log(`[questworks] DB: ${DB_PATH}`);
   console.log(`[questworks] Adapters: ${[...adapters.keys()].join(', ') || 'none'}`);
+
   if (adapters.size > 0) scheduler.start();
+
+  if (bot.enabled) {
+    await bot.init();
+
+    // Register /qw slash command with all teams
+    const publicUrl = process.env.QW_PUBLIC_URL || getConfig(db, 'qw_public_url');
+    if (publicUrl) {
+      const teams = await bot.getTeams();
+      for (const team of (Array.isArray(teams) ? teams : [])) {
+        await bot.registerSlashCommand(team.id, publicUrl);
+      }
+    } else {
+      console.warn('[bot] QW_PUBLIC_URL not set — set it via env or /qw config to register slash commands');
+    }
+
+    // Connect WebSocket listener for conversation continuations
+    bot.connectWebSocket(async ({ userId, channelId, message }) => {
+      await handleWebSocketMessage(db, adapters, scheduler, notifier, bot, userId, channelId, message);
+    });
+  }
 });

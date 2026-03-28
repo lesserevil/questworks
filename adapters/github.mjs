@@ -15,6 +15,11 @@ export class GitHubAdapter extends BaseAdapter {
   }
 
   async pull() {
+    // Label filter is required — intentional. Use /qw adapter add github to configure.
+    if (!this.labelFilter) {
+      console.log(`[github:${this.id}] no label_filter configured — skipping sync`);
+      return [];
+    }
     // TODO: implement GitHub API call
     // GET https://api.github.com/repos/{repo}/issues
     // Filter by label_filter if set

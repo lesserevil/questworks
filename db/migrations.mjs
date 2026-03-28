@@ -13,5 +13,15 @@ export function initDb(dbPath) {
   const schema = readFileSync(join(__dirname, 'schema.sql'), 'utf8');
   db.exec(schema);
 
+  // Migrations for existing databases
+  runMigrations(db);
+
   return db;
+}
+
+function runMigrations(db) {
+  // Add created_at to conversations if missing (pre-existing DBs)
+  try {
+    db.exec(`ALTER TABLE conversations ADD COLUMN created_at TEXT NOT NULL DEFAULT ''`);
+  } catch {}
 }
