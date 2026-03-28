@@ -1,0 +1,31 @@
+adapters:
+  - id: github-quest
+    type: github
+    config:
+      repo: owner/repo
+      token: $GITHUB_TOKEN
+      label_filter: "quest-team"
+  - id: beads-main
+    type: beads
+    config:
+      endpoint: $BEADS_URL
+      token: $BEADS_TOKEN
+      board_id: $BEADS_BOARD_ID
+  - id: jira-main
+    type: jira
+    config:
+      url: $JIRA_URL
+      token: $JIRA_TOKEN
+      project: $JIRA_PROJECT
+
+mattermost:
+  url: $MM_URL
+  token: $MM_BOT_TOKEN
+  channel: paperwork
+
+sync:
+  interval_seconds: 60
+
+server:
+  port: 8788
+  auth_token: $QUESTWORKS_TOKEN

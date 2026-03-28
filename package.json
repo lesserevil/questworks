@@ -1,0 +1,17 @@
+{
+  "name": "questworks",
+  "version": "2.0.0",
+  "type": "module",
+  "description": "Task routing and coordination layer for AI agents",
+  "main": "server.mjs",
+  "scripts": {
+    "start": "node server.mjs",
+    "dev": "node --watch server.mjs"
+  },
+  "dependencies": {
+    "express": "^5.0.0",
+    "better-sqlite3": "^11.0.0",
+    "js-yaml": "^4.1.0",
+    "uuid": "^10.0.0"
+  }
+}

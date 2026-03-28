@@ -17,18 +17,18 @@ import { initCrashReporter } from '../lib/crash-reporter.mjs';
 // Initialize crash reporter early — before anything else can throw
 initCrashReporter({
   service: 'wq-dashboard',
-  sourceDir: '/home/jkh/.openclaw/workspace/dashboard'
+  sourceDir: process.env.DASHBOARD_SOURCE_DIR || new URL('.', import.meta.url).pathname,
 });
 
 const execFileP = promisify(execFile);
 
 const app = express();
 const PORT = 8788;
-const AUTH_TOKEN = 'questworks-2026';
-const QUEUE_PATH = '/home/jkh/.openclaw/workspace/workqueue/queue.json';
-const MC_PATH = '/home/jkh/.local/bin/mc';
-const MINIO_ALIAS = 'do-host1';
-const BUS_LOG_PATH = '/home/jkh/.openclaw/workspace/questbus/bus.jsonl';
+const AUTH_TOKEN = process.env.QUESTWORKS_TOKEN || 'questworks-2026';
+const QUEUE_PATH = process.env.QUEUE_PATH || new URL('../workqueue/queue.json', import.meta.url).pathname;
+const MC_PATH = process.env.MC_PATH || 'mc';
+const MINIO_ALIAS = process.env.MINIO_ALIAS || 'do-host1';
+const BUS_LOG_PATH = process.env.BUS_LOG_PATH || new URL('../questbus/bus.jsonl', import.meta.url).pathname;
 
 // ── QuestBus peer fan-out registry ─────────────────────────────────────────
 const BUS_PEERS = {
