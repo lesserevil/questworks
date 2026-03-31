@@ -51,7 +51,7 @@ CREATE TABLE IF NOT EXISTS adapters_config (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL,
   name TEXT NOT NULL,
-  config_json_encrypted TEXT NOT NULL,
+  config_encrypted TEXT NOT NULL,
   created_at TEXT NOT NULL,
   last_sync_at TEXT,
   status TEXT DEFAULT 'unknown'

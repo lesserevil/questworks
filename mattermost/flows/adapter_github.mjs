@@ -60,7 +60,7 @@ export async function step(ctx, stepNum, message, data) {
       });
 
       await db.run(`
-        INSERT OR REPLACE INTO adapters_config (id, type, name, config_json_encrypted, created_at, status)
+        INSERT OR REPLACE INTO adapters_config (id, type, name, config_encrypted, created_at, status)
         VALUES (?, 'github', ?, ?, ?, 'ok')
       `, [name, name, configEncrypted, now]);
 
