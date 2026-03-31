@@ -9,8 +9,8 @@
 
 import { describe, it, mock, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
-import { JiraAdapter } from '/tmp/questworks-test/adapters/jira.mjs';
-import { AdapterError } from '/tmp/questworks-test/adapters/http.mjs';
+import { JiraAdapter } from '../../adapters/jira.mjs';
+import { AdapterError } from '../../adapters/http.mjs';
 
 // --- Helpers ---
 
