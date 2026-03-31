@@ -18,12 +18,11 @@ export async function handle(ctx) {
         return { reply: 'Channel name cannot be empty. Please enter a channel name:', step: 1, data: conversation.data };
       }
 
-      setConfig(db, 'notification_channel', channel);
+      await setConfig(db, 'notification_channel', channel);
 
-      // Update live notifier
       if (notifier) {
         notifier.channel = channel;
-        notifier._channelId = null; // invalidate cache
+        notifier._channelId = null;
       }
 
       return {

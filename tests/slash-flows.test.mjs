@@ -13,62 +13,17 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import Database from 'better-sqlite3';
+import { SqliteDb } from '../db/sqlite.mjs';
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
 
+/**
+ * Returns a SqliteDb wrapping an in-memory SQLite instance with the full schema.
+ * All flow code uses the async interface (db.query / db.queryOne / db.run).
+ */
 function makeDb() {
-  const db = new Database(':memory:');
-  db.exec(`
-    CREATE TABLE IF NOT EXISTS tasks (
-      id TEXT PRIMARY KEY,
-      title TEXT NOT NULL,
-      description TEXT,
-      status TEXT NOT NULL DEFAULT 'open',
-      assignee TEXT,
-      claimed_at TEXT,
-      source TEXT NOT NULL DEFAULT 'manual',
-      external_id TEXT NOT NULL,
-      external_url TEXT,
-      labels TEXT NOT NULL DEFAULT '[]',
-      priority INTEGER NOT NULL DEFAULT 0,
-      created_at TEXT NOT NULL,
-      updated_at TEXT NOT NULL,
-      metadata TEXT NOT NULL DEFAULT '{}',
-      UNIQUE(source, external_id)
-    );
-    CREATE TABLE IF NOT EXISTS task_history (
-      id INTEGER PRIMARY KEY AUTOINCREMENT,
-      task_id TEXT NOT NULL,
-      actor TEXT,
-      action TEXT NOT NULL,
-      old_value TEXT,
-      new_value TEXT,
-      note TEXT,
-      ts TEXT NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS conversations (
-      id TEXT PRIMARY KEY,
-      user_id TEXT NOT NULL,
-      channel_id TEXT NOT NULL,
-      flow TEXT NOT NULL,
-      step INTEGER NOT NULL DEFAULT 0,
-      data TEXT NOT NULL DEFAULT '{}',
-      updated_at INTEGER NOT NULL
-    );
-    CREATE TABLE IF NOT EXISTS adapters_config (
-      id TEXT PRIMARY KEY,
-      type TEXT NOT NULL,
-      name TEXT NOT NULL,
-      config_encrypted TEXT NOT NULL,
-      created_at TEXT,
-      last_sync_at TEXT,
-      status TEXT DEFAULT 'active'
-    );
-    CREATE TABLE IF NOT EXISTS config (
-      key TEXT PRIMARY KEY,
-      value TEXT
-    );
-  `);
+  const db = new SqliteDb(':memory:');
+  db.applySchema();
   return db;
 }
 
@@ -91,7 +46,7 @@ function insertTask(db, overrides = {}) {
     metadata: '{}',
   };
   const row = { ...defaults, ...overrides };
-  db.prepare(
+  db.raw.prepare(
     'INSERT INTO tasks (id,title,description,status,assignee,claimed_at,source,external_id,external_url,labels,priority,created_at,updated_at,metadata) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)'
   ).run(row.id, row.title, row.description, row.status, row.assignee, row.claimed_at, row.source, row.external_id, row.external_url, row.labels, row.priority, row.created_at, row.updated_at, row.metadata);
   return row;
@@ -225,8 +180,8 @@ describe('T2 — Immediate flows (done:true on start)', () => {
 
   test('config_show masks token/secret values', async () => {
     const db = makeDb();
-    db.prepare("INSERT INTO config (key, value) VALUES ('mm_bot_token', 'ghp_supersecretvalue1234')").run();
-    db.prepare("INSERT INTO config (key, value) VALUES ('sync_interval_seconds', '60')").run();
+    db.raw.prepare("INSERT INTO config (key, value) VALUES ('mm_bot_token', 'ghp_supersecretvalue1234')").run();
+    db.raw.prepare("INSERT INTO config (key, value) VALUES ('sync_interval_seconds', '60')").run();
     const r = await flows.config_show.start(db, 'u1', 'c1', '');
     assert.equal(r.done, true);
     assert.ok(!r.message.includes('ghp_supersecretvalue1234'), 'token must not appear in plaintext');
@@ -294,7 +249,7 @@ describe('T3 — Flow: adapter_add_github', () => {
     const r = await flows.adapter_add_github.step(db, conv, '');
     assert.equal(r.done, true);
     assert.ok(r.message.includes('owner-repo'), 'default name derived from repo');
-    const row = db.prepare("SELECT * FROM adapters_config WHERE type='github'").get();
+    const row = db.raw.prepare("SELECT * FROM adapters_config WHERE type='github'").get();
     assert.ok(row, 'adapter row inserted');
     assert.ok(!row.config_encrypted.includes('ghp_realtoken'), 'token not in plaintext in DB');
   });
@@ -362,7 +317,7 @@ describe('T5 — task_claim race condition', () => {
       r2.message.toLowerCase().includes('no open');
     assert.ok(secondOk, `second caller should see conflict or empty, got: "${r2.message}"`);
 
-    const dbTask = db.prepare("SELECT * FROM tasks WHERE title='Contested Task'").get();
+    const dbTask = db.raw.prepare("SELECT * FROM tasks WHERE title='Contested Task'").get();
     assert.equal(dbTask.status, 'claimed');
     assert.equal(dbTask.assignee, 'user-a');
   });
@@ -430,7 +385,7 @@ describe('T6 — task_add (manual)', () => {
     const conv = makeConv({ step: 3, data: JSON.stringify({ type: 'manual', title: 'My Task', description: 'desc' }) });
     const r = await flows.task_add.step(db, conv, '2');
     assert.equal(r.done, true);
-    const row = db.prepare("SELECT * FROM tasks WHERE title='My Task'").get();
+    const row = db.raw.prepare("SELECT * FROM tasks WHERE title='My Task'").get();
     assert.ok(row, 'task row inserted');
     assert.equal(row.source, 'manual');
   });
@@ -440,7 +395,7 @@ describe('T6 — task_add (manual)', () => {
     const conv = makeConv({ step: 3, data: JSON.stringify({ type: 'manual', title: 'Default Prio Task', description: '' }) });
     const r = await flows.task_add.step(db, conv, '');
     assert.equal(r.done, true);
-    const row = db.prepare("SELECT * FROM tasks WHERE title='Default Prio Task'").get();
+    const row = db.raw.prepare("SELECT * FROM tasks WHERE title='Default Prio Task'").get();
     assert.ok(row);
   });
 });
@@ -497,7 +452,7 @@ describe('T7 — task_add (GitHub import)', () => {
       const r = await flows.task_add.step(db, conv, 'owner/repo#1');
       assert.equal(r.done, true);
       assert.ok(r.message.includes('Test Issue'));
-      const row = db.prepare("SELECT * FROM tasks WHERE source='github'").get();
+      const row = db.raw.prepare("SELECT * FROM tasks WHERE source='github'").get();
       assert.ok(row, 'task inserted');
       assert.equal(row.external_id, 'owner/repo#1');
     } finally {
@@ -509,7 +464,7 @@ describe('T7 — task_add (GitHub import)', () => {
     const db = makeDb();
     const now = new Date().toISOString();
     // Pre-insert with UNIQUE(source, external_id)
-    db.prepare(
+    db.raw.prepare(
       "INSERT INTO tasks (id,title,description,status,source,external_id,labels,priority,created_at,updated_at,metadata) VALUES ('t1','Existing','',  'open','github','owner/repo#1','[]',0,?,?,'{}' )"
     ).run(now, now);
 
@@ -526,7 +481,7 @@ describe('T7 — task_add (GitHub import)', () => {
       // and does not throw. The exact message may vary (success or "already exists").
       assert.equal(r.done, true, 'should complete without crashing');
       // Count of tasks should still be 1 (no duplicate row)
-      const count = db.prepare('SELECT COUNT(*) as n FROM tasks').get().n;
+      const count = db.raw.prepare('SELECT COUNT(*) as n FROM tasks').get().n;
       assert.equal(count, 1, 'no duplicate row in DB');
     } finally {
       globalThis.fetch = original;
@@ -549,7 +504,7 @@ describe('T8 — TTL enforcement', () => {
       data: '{}',
       updated_at: sixMinutesAgo,
     };
-    db.prepare(
+    db.raw.prepare(
       "INSERT INTO conversations (id,user_id,channel_id,flow,step,data,updated_at) VALUES (?,?,?,?,?,?,?)"
     ).run(conv.id, conv.user_id, conv.channel_id, conv.flow, conv.step, conv.data, conv.updated_at);
 
@@ -566,7 +521,7 @@ describe('T8 — TTL enforcement', () => {
       await handleConversationReply(db, { user_id: 'u1', channel_id: 'c1', message: 'hello' });
       // Expired conv should be deleted — no reply posted
       assert.equal(postCalls.length, 0, 'no MM post for expired conversation');
-      const remaining = db.prepare('SELECT * FROM conversations WHERE id=?').get('conv-ttl');
+      const remaining = db.raw.prepare('SELECT * FROM conversations WHERE id=?').get('conv-ttl');
       assert.equal(remaining, undefined, 'conversation row deleted');
     } finally {
       globalThis.fetch = origFetch;
@@ -584,21 +539,21 @@ describe('T9 — Fresh start cancels existing conversation', () => {
     const db = makeDb();
     const now = Math.floor(Date.now() / 1000);
     // Insert an active (non-expired) conversation
-    db.prepare(
+    db.raw.prepare(
       "INSERT INTO conversations (id,user_id,channel_id,flow,step,data,updated_at) VALUES ('old-conv','u1','c1','task_list',0,'{}',?)"
     ).run(now);
 
     // Verify it exists
-    assert.ok(db.prepare('SELECT * FROM conversations WHERE id=?').get('old-conv'));
+    assert.ok(db.raw.prepare('SELECT * FROM conversations WHERE id=?').get('old-conv'));
 
     // The slash router's job is to delete existing conv and run the new flow.
     // Simulate the deleteExistingConversation + runImmediateFlow behaviour directly.
-    db.prepare("DELETE FROM conversations WHERE user_id=? AND channel_id=?").run('u1', 'c1');
+    db.raw.prepare("DELETE FROM conversations WHERE user_id=? AND channel_id=?").run('u1', 'c1');
     const r = await flows.help.start(db, 'u1', 'c1', '');
     assert.equal(r.done, true);
 
     // Old conversation should be gone
-    const old = db.prepare('SELECT * FROM conversations WHERE id=?').get('old-conv');
+    const old = db.raw.prepare('SELECT * FROM conversations WHERE id=?').get('old-conv');
     assert.equal(old, undefined, 'old conversation deleted by fresh start');
   });
 });
@@ -623,7 +578,7 @@ describe('T10 — config_set_channel', () => {
     const db = makeDb();
     const r = await flows.config_set_channel.step(db, makeConv({ step: 0 }), '#paperwork');
     assert.equal(r.done, true);
-    const row = db.prepare("SELECT value FROM config WHERE key='mm_channel'").get();
+    const row = db.raw.prepare("SELECT value FROM config WHERE key='mm_channel'").get();
     assert.equal(row.value, 'paperwork');
   });
 });
@@ -633,7 +588,7 @@ describe('T10 — config_set_channel', () => {
 describe('T11 — config_set_sync_interval', () => {
   test('start shows current interval', async () => {
     const db = makeDb();
-    db.prepare("INSERT INTO config (key,value) VALUES ('sync_interval_seconds','120')").run();
+    db.raw.prepare("INSERT INTO config (key,value) VALUES ('sync_interval_seconds','120')").run();
     const r = await flows.config_set_sync_interval.start(db, 'u1', 'c1', '');
     assert.equal(r.done, false);
     assert.ok(r.message.includes('120'));
@@ -655,7 +610,7 @@ describe('T11 — config_set_sync_interval', () => {
     const db = makeDb();
     const r = await flows.config_set_sync_interval.step(db, makeConv({ step: 0 }), '30');
     assert.equal(r.done, true);
-    const row = db.prepare("SELECT value FROM config WHERE key='sync_interval_seconds'").get();
+    const row = db.raw.prepare("SELECT value FROM config WHERE key='sync_interval_seconds'").get();
     assert.equal(row.value, '30');
   });
 });
@@ -681,7 +636,7 @@ describe('T12 — adapter_remove', () => {
   test('step 1 no → cancelled', async () => {
     const db = makeDb();
     const cfg = encrypt(JSON.stringify({ repo: 'owner/repo', token: 'x', label_filter: 'q' }));
-    db.prepare("INSERT INTO adapters_config (id,type,name,config_encrypted,status) VALUES ('a1','github','gh-adapter',?,'active')").run(cfg);
+    db.raw.prepare("INSERT INTO adapters_config (id,type,name,config_encrypted,status) VALUES ('a1','github','gh-adapter',?,'active')").run(cfg);
     const conv1 = makeConv({ step: 0 });
     const r0 = await flows.adapter_remove.step(db, conv1, 'a1');
     assert.equal(r0.done, false);
@@ -690,21 +645,21 @@ describe('T12 — adapter_remove', () => {
     assert.equal(r1.done, true);
     assert.ok(r1.message.toLowerCase().includes('cancel'));
     // Adapter still exists
-    const row = db.prepare("SELECT * FROM adapters_config WHERE id='a1'").get();
+    const row = db.raw.prepare("SELECT * FROM adapters_config WHERE id='a1'").get();
     assert.ok(row, 'adapter should still exist after cancel');
   });
 
   test('step 1 yes → adapter deleted', async () => {
     const db = makeDb();
     const cfg = encrypt(JSON.stringify({ repo: 'owner/repo', token: 'x', label_filter: 'q' }));
-    db.prepare("INSERT INTO adapters_config (id,type,name,config_encrypted,status) VALUES ('a2','github','gh-adapter2',?,'active')").run(cfg);
+    db.raw.prepare("INSERT INTO adapters_config (id,type,name,config_encrypted,status) VALUES ('a2','github','gh-adapter2',?,'active')").run(cfg);
     const conv1 = makeConv({ step: 0 });
     const r0 = await flows.adapter_remove.step(db, conv1, 'a2');
     const conv2 = makeConv({ step: 1, data: JSON.stringify(r0.data) });
     const r1 = await flows.adapter_remove.step(db, conv2, 'yes');
     assert.equal(r1.done, true);
     assert.ok(r1.message.toLowerCase().includes('removed'));
-    const row = db.prepare("SELECT * FROM adapters_config WHERE id='a2'").get();
+    const row = db.raw.prepare("SELECT * FROM adapters_config WHERE id='a2'").get();
     assert.equal(row, undefined, 'adapter deleted');
   });
 });
@@ -731,9 +686,9 @@ describe('T13 — task_done', () => {
     const conv1 = makeConv({ step: 1, user_id: 'u1', data: JSON.stringify(r0.data), flow: 'task_done' });
     const r1 = await flows.task_done.step(db, conv1, 'Finished and deployed');
     assert.equal(r1.done, true);
-    const updated = db.prepare('SELECT * FROM tasks WHERE id=?').get(task.id);
+    const updated = db.raw.prepare('SELECT * FROM tasks WHERE id=?').get(task.id);
     assert.equal(updated.status, 'done');
-    const hist = db.prepare('SELECT * FROM task_history WHERE task_id=?').get(task.id);
+    const hist = db.raw.prepare('SELECT * FROM task_history WHERE task_id=?').get(task.id);
     assert.ok(hist, 'history entry recorded');
     assert.equal(hist.note, 'Finished and deployed');
   });
@@ -752,9 +707,9 @@ describe('T14 — task_block', () => {
     const conv1 = makeConv({ step: 1, user_id: 'u2', data: JSON.stringify(r0.data), flow: 'task_block' });
     const r1 = await flows.task_block.step(db, conv1, 'Waiting on API credentials');
     assert.equal(r1.done, true);
-    const updated = db.prepare('SELECT * FROM tasks WHERE id=?').get(task.id);
+    const updated = db.raw.prepare('SELECT * FROM tasks WHERE id=?').get(task.id);
     assert.equal(updated.status, 'blocked');
-    const hist = db.prepare('SELECT * FROM task_history WHERE task_id=?').get(task.id);
+    const hist = db.raw.prepare('SELECT * FROM task_history WHERE task_id=?').get(task.id);
     assert.equal(hist.action, 'blocked');
     assert.equal(hist.note, 'Waiting on API credentials');
   });
@@ -766,7 +721,7 @@ describe('T15 — adapter_list token masking', () => {
   test('adapter_list masks token in output', async () => {
     const db = makeDb();
     const cfg = encrypt(JSON.stringify({ repo: 'owner/repo', token: 'ghp_veryS3cretToken', label_filter: 'q' }));
-    db.prepare("INSERT INTO adapters_config (id,type,name,config_encrypted,status) VALUES ('aa1','github','my-github',?,'active')").run(cfg);
+    db.raw.prepare("INSERT INTO adapters_config (id,type,name,config_encrypted,status) VALUES ('aa1','github','my-github',?,'active')").run(cfg);
     const r = await flows.adapter_list.start(db, 'u1', 'c1', '');
     assert.equal(r.done, true);
     assert.ok(!r.message.includes('ghp_veryS3cretToken'), 'full token must not appear in output');

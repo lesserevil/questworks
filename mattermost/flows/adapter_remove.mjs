@@ -6,7 +6,7 @@ export async function handle(ctx) {
 
   switch (step) {
     case 0: {
-      const rows = loadAdapterConfigs(db);
+      const rows = await loadAdapterConfigs(db);
       if (rows.length === 0) {
         return { reply: 'No adapters configured.', done: true };
       }
@@ -20,7 +20,8 @@ export async function handle(ctx) {
 
     case 1: {
       const id = message.trim();
-      const row = loadAdapterConfigs(db).find(r => r.id === id);
+      const rows = await loadAdapterConfigs(db);
+      const row = rows.find(r => r.id === id);
       if (!row) {
         return {
           reply: `Adapter \`${id}\` not found. Please enter a valid adapter id (or type \`cancel\` to abort):`,
@@ -45,7 +46,7 @@ export async function handle(ctx) {
       }
 
       const id = data.targetId;
-      deleteAdapterConfig(db, id);
+      await deleteAdapterConfig(db, id);
       adapters.delete(id);
       return { reply: `✅ Adapter **${id}** removed.`, done: true };
     }

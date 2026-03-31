@@ -18,9 +18,10 @@ function formatList(tasks) {
 export async function start(ctx, conv) {
   const { db } = ctx;
   const userName = conv.data.mm_user_name || 'unknown';
-  const tasks = db.prepare(
-    "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC"
-  ).all(userName);
+  const tasks = await db.query(
+    "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC",
+    [userName]
+  );
   if (!tasks.length) return { reply: 'You have no claimed tasks to mark as done.', done: true };
   return {
     reply: formatList(tasks) + '\n\nWhich task did you complete? (enter `#` or id)',
@@ -33,9 +34,10 @@ export async function step(ctx, stepNum, message, data) {
   const text = message.trim();
 
   if (stepNum === 1) {
-    const tasks = db.prepare(
-      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC"
-    ).all(userName);
+    const tasks = await db.query(
+      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC",
+      [userName]
+    );
 
     let taskId;
     const num = parseInt(text, 10);
@@ -49,7 +51,7 @@ export async function step(ctx, stepNum, message, data) {
       return { reply: "Couldn't find that task. Enter `#` or id:", nextStep: 1, newData: data, done: false };
     }
 
-    const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
+    const task = await db.queryOne('SELECT * FROM tasks WHERE id=?', [taskId]);
     return {
       reply: `**${task.title}**\nOptional: add a completion note? (press Enter to skip)`,
       nextStep: 2,
@@ -63,14 +65,20 @@ export async function step(ctx, stepNum, message, data) {
     const taskId = data.taskId;
     const now = new Date().toISOString();
 
-    db.prepare(`UPDATE tasks SET status='done', updated_at=? WHERE id=?`).run(now, taskId);
-    db.prepare(`INSERT INTO task_history (task_id, actor, action, old_value, new_value, note, ts) VALUES (?,?,?,?,?,?,?)`)
-      .run(taskId, userName, 'complete', null, 'done', note, now);
+    await db.run("UPDATE tasks SET status='done', updated_at=? WHERE id=?", [now, taskId]);
+    await db.run(
+      "INSERT INTO task_history (task_id, actor, action, old_value, new_value, note, ts) VALUES (?,?,?,?,?,?,?)",
+      [taskId, userName, 'complete', null, 'done', note, now]
+    );
 
-    const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
-    const full = { ...task, labels: JSON.parse(task.labels || '[]'), metadata: JSON.parse(task.metadata || '{}') };
+    const task = await db.queryOne('SELECT * FROM tasks WHERE id=?', [taskId]);
+    const full = {
+      ...task,
+      labels: typeof task.labels === 'string' ? JSON.parse(task.labels || '[]') : (task.labels ?? []),
+      metadata: typeof task.metadata === 'string' ? JSON.parse(task.metadata || '{}') : (task.metadata ?? {}),
+    };
 
-    const adapter = adapters.get(task.source);
+    const adapter = adapters?.get(task.source);
     if (adapter) adapter.close(full).catch(() => {});
     if (notifier) notifier.onCompleted(full).catch(() => {});
 

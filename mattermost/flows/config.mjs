@@ -10,7 +10,7 @@ export async function start(ctx, conv) {
     return { reply: 'Which channel for task notifications? (e.g. `#paperwork`)' };
   }
   if (subflow === 'interval') {
-    const current = getConfig(ctx.db, 'sync_interval_seconds', 60);
+    const current = await getConfig(ctx.db, 'sync_interval_seconds', 60);
     return { reply: `Sync interval in seconds? (current: \`${current}\`)` };
   }
   return { reply: 'Unknown config subflow.', done: true };
@@ -25,7 +25,7 @@ export async function step(ctx, stepNum, message, data) {
       return { reply: 'Channel name cannot be empty. Enter the channel name:', nextStep: 1, newData: data, done: false };
     }
     const channel = text.replace(/^#/, '');
-    setConfig(db, 'notification_channel', channel);
+    await setConfig(db, 'notification_channel', channel);
     if (notifier) {
       notifier.channel = channel;
       notifier._channelId = null;
@@ -38,7 +38,7 @@ export async function step(ctx, stepNum, message, data) {
     if (isNaN(val) || val < 10) {
       return { reply: 'Please enter a number ≥ 10 (seconds):', nextStep: 1, newData: data, done: false };
     }
-    setConfig(db, 'sync_interval_seconds', val);
+    await setConfig(db, 'sync_interval_seconds', val);
     if (scheduler) {
       scheduler.stop();
       scheduler.interval = val * 1000;

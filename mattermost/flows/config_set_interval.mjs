@@ -19,9 +19,8 @@ export async function handle(ctx) {
         return { reply: 'Interval must be at least 10 seconds. Please enter a value:', step: 1, data: conversation.data };
       }
 
-      setConfig(db, 'sync_interval_seconds', seconds);
+      await setConfig(db, 'sync_interval_seconds', seconds);
 
-      // Update live scheduler
       if (scheduler) {
         scheduler.stop();
         scheduler.interval = seconds * 1000;

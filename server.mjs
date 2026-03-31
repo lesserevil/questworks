@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import yaml from 'js-yaml';
 
-import { initDb } from './db/migrations.mjs';
+import { getDb } from './db/index.mjs';
 import { loadAdapterConfigs } from './db/adapters.mjs';
 import { getConfig } from './db/config.mjs';
 import { GitHubAdapter } from './adapters/github.mjs';
@@ -32,7 +32,6 @@ function loadConfig() {
     return { adapters: [], mattermost: {}, sync: { interval_seconds: 60 }, server: { port: 8788 } };
   }
   const raw = readFileSync(configPath, 'utf8');
-  // Expand $ENV_VAR references
   const expanded = raw.replace(/\$(\w+)/g, (_, name) => process.env[name] || '');
   return yaml.load(expanded);
 }
@@ -48,8 +47,8 @@ function buildAdapters(adapterConfigs) {
   return map;
 }
 
-function loadDbAdapters(db, adapters) {
-  const rows = loadAdapterConfigs(db);
+async function loadDbAdapters(db, adapters) {
+  const rows = await loadAdapterConfigs(db);
   for (const row of rows) {
     try {
       const config = decryptJson(row.config_encrypted);
@@ -64,96 +63,104 @@ function loadDbAdapters(db, adapters) {
 }
 
 // --- Main ---
-const config = loadConfig();
-const DB_PATH = process.env.QUESTWORKS_DB || join(__dirname, 'questworks.db');
-const db = initDb(DB_PATH);
-db.exec(readFileSync(join(__dirname, 'db', 'schema-v2.sql'), 'utf8'));
+async function main() {
+  const config = loadConfig();
 
-// Build adapter registry: config.yaml first, then DB (DB overrides yaml for same ID)
-const adapters = buildAdapters(config.adapters);
-loadDbAdapters(db, adapters);
+  // Initialize DB — backend selected via DATABASE_URL
+  const db = await getDb();
+  const dbLabel = db.backend === 'postgres' ? 'postgres' : (db.dbPath || 'sqlite');
 
-const mmConfig = config.mattermost || {};
-const mmUrl = process.env.MM_URL || mmConfig.url || '';
-const mmToken = process.env.MM_BOT_TOKEN || mmConfig.token || '';
+  // Build adapter registry: config.yaml first, then DB (DB overrides yaml for same ID)
+  const adapters = buildAdapters(config.adapters);
+  await loadDbAdapters(db, adapters);
 
-const notifier = new MattermostNotifier({ url: mmUrl, token: mmToken, channel: mmConfig.channel });
-const bot = new MattermostBot({ url: mmUrl, token: mmToken });
+  const mmConfig = config.mattermost || {};
+  const mmUrl = process.env.MM_URL || mmConfig.url || '';
+  const mmToken = process.env.MM_BOT_TOKEN || mmConfig.token || '';
 
-const syncInterval = config.sync?.interval_seconds || 60;
-const scheduler = new SyncScheduler(db, adapters, notifier, syncInterval);
+  const notifier = new MattermostNotifier({ url: mmUrl, token: mmToken, channel: mmConfig.channel });
+  const bot = new MattermostBot({ url: mmUrl, token: mmToken });
 
-const app = express();
-app.use(express.json());
+  const syncInterval = config.sync?.interval_seconds || 60;
+  const scheduler = new SyncScheduler(db, adapters, notifier, syncInterval);
 
-// Auth middleware (optional — skip if no token configured)
-const AUTH_TOKEN = process.env.QUESTWORKS_TOKEN || config.server?.auth_token;
-app.use((req, res, next) => {
-  if (!AUTH_TOKEN) return next();
-  // Public endpoints that don't require auth
-  if (req.path === '/health' || req.path === '/' || req.path.startsWith('/slash')) return next();
-  const auth = req.headers.authorization;
-  if (!auth || auth !== `Bearer ${AUTH_TOKEN}`) {
-    return res.status(401).json({ error: 'unauthorized' });
-  }
-  next();
-});
+  const app = express();
+  app.use(express.json());
 
-// Routes
-app.use('/tasks', createTaskRoutes(db, notifier, adapters));
-app.use('/adapters', createAdapterRoutes(db, adapters, scheduler));
-app.use('/slash', createSlashRouter(db));
-
-app.get('/health', (req, res) => {
-  res.json({
-    ok: true,
-    db: DB_PATH,
-    adapters: adapters.size,
-    ts: new Date().toISOString(),
+  // Auth middleware (optional — skip if no token configured)
+  const AUTH_TOKEN = process.env.QUESTWORKS_TOKEN || config.server?.auth_token;
+  app.use((req, res, next) => {
+    if (!AUTH_TOKEN) return next();
+    if (req.path === '/health' || req.path === '/' || req.path.startsWith('/slash')) return next();
+    const auth = req.headers.authorization;
+    if (!auth || auth !== `Bearer ${AUTH_TOKEN}`) {
+      return res.status(401).json({ error: 'unauthorized' });
+    }
+    next();
   });
-});
 
-// Dashboard — serve static files from dashboard/
-const DASHBOARD_DIR = process.env.DASHBOARD_DIR || join(__dirname, 'dashboard');
-if (existsSync(DASHBOARD_DIR)) {
-  app.use('/dashboard', express.static(DASHBOARD_DIR));
+  // Routes
+  app.use('/tasks', createTaskRoutes(db, notifier, adapters));
+  app.use('/adapters', createAdapterRoutes(db, adapters, scheduler));
+  app.use('/slash', createSlashRouter(db));
+
+  app.get('/health', (req, res) => {
+    res.json({
+      ok: true,
+      backend: db.backend,
+      db: dbLabel,
+      adapters: adapters.size,
+      ts: new Date().toISOString(),
+    });
+  });
+
+  // Dashboard — serve static files from dashboard/
+  const DASHBOARD_DIR = process.env.DASHBOARD_DIR || join(__dirname, 'dashboard');
+  if (existsSync(DASHBOARD_DIR)) {
+    app.use('/dashboard', express.static(DASHBOARD_DIR));
+  }
+
+  // QuestBus SSE endpoint
+  const BUS_PATH = process.env.BUS_PATH || join(__dirname, 'questbus', 'bus.jsonl');
+  const sseClients = new Set();
+
+  app.get('/bus/stream', (req, res) => {
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.flushHeaders();
+    sseClients.add(res);
+    req.on('close', () => sseClients.delete(res));
+  });
+
+  app.post('/bus/send', (req, res) => {
+    const msg = req.body;
+    if (!msg) return res.status(400).json({ error: 'body required' });
+    const line = JSON.stringify({ ...msg, ts: msg.ts || new Date().toISOString() }) + '\n';
+    import('fs').then(({ appendFileSync }) => {
+      try { appendFileSync(BUS_PATH, line); } catch {}
+    });
+    for (const client of sseClients) {
+      client.write(`data: ${line}\n`);
+    }
+    res.json({ ok: true });
+  });
+
+  app.get('/', (req, res) => {
+    res.json({ service: 'QuestWorks', version: '2.0.0', docs: '/health' });
+  });
+
+  const PORT = process.env.PORT || config.server?.port || 8788;
+  app.listen(PORT, () => {
+    console.log(`[questworks] Server listening on port ${PORT}`);
+    console.log(`[questworks] DB backend: ${db.backend} (${dbLabel})`);
+    console.log(`[questworks] Adapters: ${[...adapters.keys()].join(', ') || 'none'}`);
+    if (adapters.size > 0) scheduler.start();
+    startWebSocket(db, handleConversationReply);
+  });
 }
 
-// QuestBus SSE endpoint (backwards compat with dashboard/server.mjs)
-const BUS_PATH = process.env.BUS_PATH || join(__dirname, 'questbus', 'bus.jsonl');
-const sseClients = new Set();
-
-app.get('/bus/stream', (req, res) => {
-  res.setHeader('Content-Type', 'text/event-stream');
-  res.setHeader('Cache-Control', 'no-cache');
-  res.setHeader('Connection', 'keep-alive');
-  res.flushHeaders();
-  sseClients.add(res);
-  req.on('close', () => sseClients.delete(res));
-});
-
-app.post('/bus/send', (req, res) => {
-  const msg = req.body;
-  if (!msg) return res.status(400).json({ error: 'body required' });
-  const line = JSON.stringify({ ...msg, ts: msg.ts || new Date().toISOString() }) + '\n';
-  import('fs').then(({ appendFileSync }) => {
-    try { appendFileSync(BUS_PATH, line); } catch {}
-  });
-  for (const client of sseClients) {
-    client.write(`data: ${line}\n`);
-  }
-  res.json({ ok: true });
-});
-
-app.get('/', (req, res) => {
-  res.json({ service: 'QuestWorks', version: '2.0.0', docs: '/health' });
-});
-
-const PORT = process.env.PORT || config.server?.port || 8788;
-app.listen(PORT, () => {
-  console.log(`[questworks] Server listening on port ${PORT}`);
-  console.log(`[questworks] DB: ${DB_PATH}`);
-  console.log(`[questworks] Adapters: ${[...adapters.keys()].join(', ') || 'none'}`);
-  if (adapters.size > 0) scheduler.start();
-  startWebSocket(db, handleConversationReply);
+main().catch(err => {
+  console.error('[questworks] Startup error:', err);
+  process.exit(1);
 });

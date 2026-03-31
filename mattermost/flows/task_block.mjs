@@ -2,7 +2,7 @@
  * Flow: /qw task block
  * Step 1 — Show user's in-progress tasks, ask which is blocked
  * Step 2 — Ask what's blocking it
- * Done  — Update status to blocked, notify #paperwork
+ * Done  — Update status to blocked, record history
  */
 
 function formatList(tasks) {
@@ -18,9 +18,10 @@ function formatList(tasks) {
 export async function start(ctx, conv) {
   const { db } = ctx;
   const userName = conv.data.mm_user_name || 'unknown';
-  const tasks = db.prepare(
-    "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC"
-  ).all(userName);
+  const tasks = await db.query(
+    "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC",
+    [userName]
+  );
   if (!tasks.length) return { reply: 'You have no in-progress tasks.', done: true };
   return {
     reply: formatList(tasks) + '\n\nWhich task is blocked? (enter `#` or id)',
@@ -28,14 +29,15 @@ export async function start(ctx, conv) {
 }
 
 export async function step(ctx, stepNum, message, data) {
-  const { db, bot, notifier } = ctx;
+  const { db, notifier } = ctx;
   const userName = data.mm_user_name || 'unknown';
   const text = message.trim();
 
   if (stepNum === 1) {
-    const tasks = db.prepare(
-      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC"
-    ).all(userName);
+    const tasks = await db.query(
+      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress','review') ORDER BY updated_at DESC",
+      [userName]
+    );
 
     let taskId;
     const num = parseInt(text, 10);
@@ -49,7 +51,7 @@ export async function step(ctx, stepNum, message, data) {
       return { reply: "Couldn't find that task. Enter `#` or id:", nextStep: 1, newData: data, done: false };
     }
 
-    const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
+    const task = await db.queryOne('SELECT * FROM tasks WHERE id=?', [taskId]);
     return {
       reply: `**${task.title}**\nWhat's blocking it?`,
       nextStep: 2,
@@ -65,18 +67,13 @@ export async function step(ctx, stepNum, message, data) {
 
     const taskId = data.taskId;
     const now = new Date().toISOString();
-    db.prepare(`UPDATE tasks SET status='blocked', updated_at=? WHERE id=?`).run(now, taskId);
-    db.prepare(`INSERT INTO task_history (task_id, actor, action, old_value, new_value, note, ts) VALUES (?,?,?,?,?,?,?)`)
-      .run(taskId, userName, 'block', null, 'blocked', text, now);
+    await db.run("UPDATE tasks SET status='blocked', updated_at=? WHERE id=?", [now, taskId]);
+    await db.run(
+      "INSERT INTO task_history (task_id, actor, action, old_value, new_value, note, ts) VALUES (?,?,?,?,?,?,?)",
+      [taskId, userName, 'block', null, 'blocked', text, now]
+    );
 
-    const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
-
-    // Notify in the notification channel via bot
-    if (bot?.enabled) {
-      notifier._getChannelId().then(channelId => {
-        if (channelId) bot.post(channelId, `🚧 **${task.title}** is blocked\n> ${text}\n— @${userName}`);
-      }).catch(() => {});
-    }
+    const task = await db.queryOne('SELECT * FROM tasks WHERE id=?', [taskId]);
 
     return {
       reply: `🚧 Marked as blocked: **${task.title}**\nReason: ${text}`,

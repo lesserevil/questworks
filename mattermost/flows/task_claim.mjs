@@ -20,9 +20,10 @@ function formatTaskList(tasks) {
 
 export async function start(ctx, conv) {
   const { db } = ctx;
-  const tasks = db.prepare(
-    "SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC"
-  ).all();
+  const tasks = await db.query(
+    "SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC",
+    []
+  );
   if (!tasks.length) return { reply: 'No open tasks available to claim.', done: true };
   return {
     reply: formatTaskList(tasks) + '\n\nWhich task do you want to claim? (enter the `#` or id)',
@@ -35,10 +36,10 @@ export async function step(ctx, stepNum, message, data) {
   const text = message.trim();
 
   if (stepNum === 1) {
-    // Re-fetch open tasks to resolve by number
-    const tasks = db.prepare(
-      "SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC"
-    ).all();
+    const tasks = await db.query(
+      "SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC",
+      []
+    );
 
     let taskId;
     const num = parseInt(text, 10);
@@ -56,31 +57,33 @@ export async function step(ctx, stepNum, message, data) {
       };
     }
 
-    const claimTx = db.transaction(() => {
-      const task = db.prepare('SELECT * FROM tasks WHERE id=?').get(taskId);
-      if (!task) return { error: 'not_found' };
-      if (task.status !== 'open' || task.assignee) return { error: 'claimed', assignee: task.assignee };
-      const now = new Date().toISOString();
-      db.prepare(`UPDATE tasks SET status='claimed', assignee=?, claimed_at=?, updated_at=? WHERE id=?`)
-        .run(userName, now, now, task.id);
-      db.prepare(`INSERT INTO task_history (task_id, actor, action, old_value, new_value, ts) VALUES (?,?,?,?,?,?)`)
-        .run(task.id, userName, 'claim', 'open', 'claimed', now);
-      return { ok: true, task: db.prepare('SELECT * FROM tasks WHERE id=?').get(task.id) };
-    });
+    const now = new Date().toISOString();
+    const claimResult = await db.run(
+      "UPDATE tasks SET status='claimed', assignee=?, claimed_at=?, updated_at=? WHERE id=? AND status='open'",
+      [userName, now, now, taskId]
+    );
 
-    const result = claimTx();
-    if (result.error === 'not_found') return { reply: '❌ Task not found.', nextStep: 0, newData: {}, done: true };
-    if (result.error === 'claimed') {
-      const newList = db.prepare("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC").all();
+    if (claimResult.changes === 0) {
+      const newList = await db.query("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC", []);
       return {
-        reply: `❌ That task was just claimed by **${result.assignee}**.\n\n${formatTaskList(newList)}\n\nPick another? (enter \`#\` or id)`,
+        reply: `❌ That task was just claimed by someone else.\n\n${formatTaskList(newList)}\n\nPick another? (enter \`#\` or id)`,
         nextStep: 1, newData: data, done: false,
       };
     }
 
-    const full = { ...result.task, labels: JSON.parse(result.task.labels || '[]'), metadata: JSON.parse(result.task.metadata || '{}') };
+    await db.run(
+      "INSERT INTO task_history (task_id, actor, action, old_value, new_value, ts) VALUES (?,?,?,?,?,?)",
+      [taskId, userName, 'claim', 'open', 'claimed', now]
+    );
+
+    const task = await db.queryOne('SELECT * FROM tasks WHERE id=?', [taskId]);
+    const full = {
+      ...task,
+      labels: typeof task.labels === 'string' ? JSON.parse(task.labels || '[]') : (task.labels ?? []),
+      metadata: typeof task.metadata === 'string' ? JSON.parse(task.metadata || '{}') : (task.metadata ?? {}),
+    };
     if (notifier) notifier.onClaimed(full).catch(() => {});
-    return { reply: `✅ Claimed: **${result.task.title}**`, nextStep: 0, newData: {}, done: true };
+    return { reply: `✅ Claimed: **${task.title}**`, nextStep: 0, newData: {}, done: true };
   }
 
   return { reply: 'Something went wrong. Try `/qw task claim` again.', nextStep: 0, newData: {}, done: true };

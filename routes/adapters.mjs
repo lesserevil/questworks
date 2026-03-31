@@ -7,7 +7,7 @@ export function createAdapterRoutes(db, adapterRegistry, scheduler) {
   router.get('/', async (req, res) => {
     const results = [];
     for (const [id, adapter] of adapterRegistry.entries()) {
-      const state = db.prepare('SELECT * FROM adapter_state WHERE adapter_id = ?').get(id);
+      const state = await db.queryOne('SELECT * FROM adapter_state WHERE adapter_id = ?', [id]);
       let health;
       try {
         health = await adapter.health();

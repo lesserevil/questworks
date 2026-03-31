@@ -15,12 +15,12 @@ import express from 'express';
 import { randomUUID } from 'crypto';
 import { flows } from './flows/index.mjs';
 
-const TTL_SECONDS = 5 * 60;
+const TTL_MS = 5 * 60 * 1000;
 
 // ── MM API helper ─────────────────────────────────────────────────────────────
 
-function mmCreds(db) {
-  const row = db.prepare("SELECT value FROM config WHERE key='mm_bot_token'").get();
+async function mmCreds(db) {
+  const row = await db.queryOne("SELECT value FROM config WHERE key='mm_bot_token'", []);
   return {
     url: process.env.MM_URL,
     token: row?.value || process.env.MM_BOT_TOKEN,
@@ -28,7 +28,7 @@ function mmCreds(db) {
 }
 
 async function postToMm(db, channelId, message) {
-  const { url, token } = mmCreds(db);
+  const { url, token } = await mmCreds(db);
   if (!url || !token) return;
   try {
     await fetch(`${url}/api/v4/posts`, {
@@ -102,7 +102,7 @@ export function createSlashRouter(db) {
     }
 
     // Cancel any existing conversation for this user+channel (fresh start)
-    db.prepare('DELETE FROM conversations WHERE user_id=? AND channel_id=?').run(user_id, channel_id);
+    await db.run('DELETE FROM conversations WHERE user_id=? AND channel_id=?', [user_id, channel_id]);
 
     let result;
     try {
@@ -116,9 +116,11 @@ export function createSlashRouter(db) {
     await postToMm(db, channel_id, result.message);
 
     if (!result.done) {
-      db.prepare(
-        "INSERT INTO conversations (id, user_id, channel_id, flow, step, data, updated_at) VALUES (?, ?, ?, ?, 0, '{}', unixepoch())"
-      ).run(randomUUID(), user_id, channel_id, flowName);
+      const now = new Date().toISOString();
+      await db.run(
+        'INSERT INTO conversations (id, user_id, channel_id, flow, step, data, created_at, updated_at) VALUES (?, ?, ?, ?, 0, ?, ?, ?)',
+        [randomUUID(), user_id, channel_id, flowName, '{}', now, now]
+      );
     }
   });
 
@@ -130,40 +132,54 @@ export function createSlashRouter(db) {
 export async function handleConversationReply(db, post) {
   const { user_id, channel_id, message } = post;
 
-  const conv = db.prepare(
-    'SELECT * FROM conversations WHERE user_id=? AND channel_id=?'
-  ).get(user_id, channel_id);
+  const conv = await db.queryOne(
+    'SELECT * FROM conversations WHERE user_id=? AND channel_id=?',
+    [user_id, channel_id]
+  );
   if (!conv) return;
 
-  // TTL check
-  if ((Math.floor(Date.now() / 1000) - conv.updated_at) > TTL_SECONDS) {
-    db.prepare('DELETE FROM conversations WHERE id=?').run(conv.id);
+  // TTL check — handle both ISO strings and legacy Unix timestamps (seconds)
+  const updatedAtMs = /^\d+(\.\d+)?$/.test(String(conv.updated_at))
+    ? Number(conv.updated_at) * 1000
+    : new Date(conv.updated_at).getTime();
+  const age = Date.now() - updatedAtMs;
+  if (age > TTL_MS) {
+    await db.run('DELETE FROM conversations WHERE id=?', [conv.id]);
     return;
   }
 
   const flow = flows[conv.flow];
   if (!flow) {
-    db.prepare('DELETE FROM conversations WHERE id=?').run(conv.id);
+    await db.run('DELETE FROM conversations WHERE id=?', [conv.id]);
     return;
   }
 
+  // Deserialize data for flow
+  const convWithData = {
+    ...conv,
+    data: typeof conv.data === 'string' ? JSON.parse(conv.data || '{}') : (conv.data ?? {}),
+  };
+
   let result;
   try {
-    result = await flow.step(db, conv, message || '');
+    result = await flow.step(db, convWithData, message || '');
   } catch (err) {
     console.error(`[slash] flow.step(${conv.flow}) error:`, err);
     await postToMm(db, channel_id, `Error: ${err.message}`);
-    db.prepare('DELETE FROM conversations WHERE id=?').run(conv.id);
+    await db.run('DELETE FROM conversations WHERE id=?', [conv.id]);
     return;
   }
 
   await postToMm(db, channel_id, result.message);
 
   if (result.done) {
-    db.prepare('DELETE FROM conversations WHERE id=?').run(conv.id);
+    await db.run('DELETE FROM conversations WHERE id=?', [conv.id]);
   } else {
     const newStep = result.step !== undefined ? result.step : conv.step + 1;
     const newData = result.data !== undefined ? JSON.stringify(result.data) : conv.data;
-    db.prepare('UPDATE conversations SET step=?, data=?, updated_at=unixepoch() WHERE id=?').run(newStep, newData, conv.id);
+    await db.run(
+      'UPDATE conversations SET step=?, data=?, updated_at=? WHERE id=?',
+      [newStep, newData, new Date().toISOString(), conv.id]
+    );
   }
 }

@@ -4,11 +4,6 @@
  * Each flow exports:
  *   start(db, userId, channelId, args) → { message, done }
  *   step(db, conv, userText)           → { message, done, step?, data? }
- *
- * When done:true is returned no conversation is created/kept.
- * When done:false, `step` sets the new step number, `data` sets new data object.
- * If `step` is omitted it defaults to conv.step + 1; if `data` is omitted the
- * current data is preserved.
  */
 import { randomUUID } from 'crypto';
 import { encrypt, decrypt } from '../crypto.mjs';
@@ -16,6 +11,7 @@ import { encrypt, decrypt } from '../crypto.mjs';
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function getData(conv) {
+  if (typeof conv.data === 'object' && conv.data !== null) return conv.data;
   try { return JSON.parse(conv.data || '{}'); } catch { return {}; }
 }
 
@@ -40,8 +36,8 @@ function fmtTasks(tasks) {
   ).join('\n');
 }
 
-function fmtAdapters(db) {
-  const rows = db.prepare('SELECT * FROM adapters_config ORDER BY created_at').all();
+async function fmtAdapters(db) {
+  const rows = await db.query('SELECT * FROM adapters_config ORDER BY created_at', []);
   if (!rows.length) return '_No adapters configured._';
   return rows.map((a, i) => {
     const cfg = tryDecryptCfg(a.config_encrypted);
@@ -85,7 +81,10 @@ const adapter_add_github = {
       const id = randomUUID();
       const rawToken = decrypt(data.token);
       const cfg = { repo: data.repo, token: rawToken, label_filter: data.label };
-      db.prepare('INSERT INTO adapters_config (id, type, name, config_encrypted) VALUES (?, ?, ?, ?)').run(id, 'github', name, encrypt(JSON.stringify(cfg)));
+      await db.run(
+        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+        [id, 'github', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
+      );
       return { message: `GitHub adapter **${name}** added (\`${id.slice(0, 8)}\`). Sync runs on next scheduled interval.`, done: true };
     }
 
@@ -119,7 +118,10 @@ const adapter_add_beads = {
       const name = isSkip(text) ? `beads-${data.board_id}` : text;
       const id = randomUUID();
       const cfg = { endpoint: data.endpoint, token: decrypt(data.token), board_id: data.board_id };
-      db.prepare('INSERT INTO adapters_config (id, type, name, config_encrypted) VALUES (?, ?, ?, ?)').run(id, 'beads', name, encrypt(JSON.stringify(cfg)));
+      await db.run(
+        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+        [id, 'beads', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
+      );
       return { message: `Beads adapter **${name}** added (\`${id.slice(0, 8)}\`).`, done: true };
     }
 
@@ -153,7 +155,10 @@ const adapter_add_jira = {
       const name = isSkip(text) ? `jira-${data.project.toLowerCase()}` : text;
       const id = randomUUID();
       const cfg = { url: data.url, token: decrypt(data.token), project: data.project };
-      db.prepare('INSERT INTO adapters_config (id, type, name, config_encrypted) VALUES (?, ?, ?, ?)').run(id, 'jira', name, encrypt(JSON.stringify(cfg)));
+      await db.run(
+        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+        [id, 'jira', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
+      );
       return { message: `Jira adapter **${name}** added (\`${id.slice(0, 8)}\`).`, done: true };
     }
 
@@ -165,7 +170,7 @@ const adapter_add_jira = {
 
 const adapter_list = {
   async start(db, userId, channelId, args) {
-    return { message: `**Configured Adapters**\n${fmtAdapters(db)}`, done: true };
+    return { message: `**Configured Adapters**\n${await fmtAdapters(db)}`, done: true };
   },
   async step(db, conv, userText) { return { message: 'Done.', done: true }; },
 };
@@ -174,7 +179,7 @@ const adapter_list = {
 
 const adapter_remove = {
   async start(db, userId, channelId, args) {
-    const list = fmtAdapters(db);
+    const list = await fmtAdapters(db);
     return { message: `**Adapters:**\n${list}\n\nEnter the adapter ID to remove (or \`cancel\`):`, done: false };
   },
   async step(db, conv, userText) {
@@ -183,7 +188,7 @@ const adapter_remove = {
 
     if (conv.step === 0) {
       if (text.toLowerCase() === 'cancel') return { message: 'Cancelled.', done: true };
-      const row = db.prepare('SELECT * FROM adapters_config WHERE id=?').get(text);
+      const row = await db.queryOne('SELECT * FROM adapters_config WHERE id=?', [text]);
       if (!row) {
         return { message: `Adapter \`${text}\` not found. Enter a valid ID or \`cancel\`:`, done: false, data, step: 0 };
       }
@@ -197,7 +202,7 @@ const adapter_remove = {
 
     if (conv.step === 1) {
       if (text.toLowerCase() !== 'yes') return { message: 'Removal cancelled.', done: true };
-      db.prepare('DELETE FROM adapters_config WHERE id=?').run(data.adapterId);
+      await db.run('DELETE FROM adapters_config WHERE id=?', [data.adapterId]);
       return { message: `Adapter **${data.adapterName}** removed.`, done: true };
     }
 
@@ -209,17 +214,18 @@ const adapter_remove = {
 
 const adapter_sync = {
   async start(db, userId, channelId, args) {
-    const list = fmtAdapters(db);
+    const list = await fmtAdapters(db);
     return { message: `**Adapters:**\n${list}\n\nEnter adapter ID to sync, or \`all\`:`, done: false };
   },
   async step(db, conv, userText) {
     const text = userText.trim();
     if (text.toLowerCase() === 'cancel') return { message: 'Cancelled.', done: true };
     if (text.toLowerCase() === 'all') {
-      const n = db.prepare("SELECT COUNT(*) as n FROM adapters_config WHERE status='active'").get().n;
+      const row = await db.queryOne("SELECT COUNT(*) as n FROM adapters_config WHERE status='active'", []);
+      const n = row?.n || 0;
       return { message: `Sync queued for all ${n} active adapter(s). Tasks will update on next sync cycle.`, done: true };
     }
-    const row = db.prepare('SELECT name FROM adapters_config WHERE id=?').get(text);
+    const row = await db.queryOne('SELECT name FROM adapters_config WHERE id=?', [text]);
     if (!row) {
       return { message: `Adapter \`${text}\` not found. Enter a valid ID or \`all\`:`, done: false, data: getData(conv), step: 0 };
     }
@@ -231,7 +237,7 @@ const adapter_sync = {
 
 const task_list = {
   async start(db, userId, channelId, args) {
-    const tasks = db.prepare("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at ASC LIMIT 20").all();
+    const tasks = await db.query("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at ASC LIMIT 20", []);
     return { message: `**Open Tasks (${tasks.length})**\n${fmtTasks(tasks)}`, done: true };
   },
   async step(db, conv, userText) { return { message: 'Done.', done: true }; },
@@ -241,31 +247,33 @@ const task_list = {
 
 const task_claim = {
   async start(db, userId, channelId, args) {
-    const tasks = db.prepare("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at ASC LIMIT 20").all();
+    const tasks = await db.query("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC", []);
     if (!tasks.length) return { message: 'No open tasks available to claim.', done: true };
     return { message: `**Open Tasks:**\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to claim:`, done: false };
   },
   async step(db, conv, userText) {
+    const data = getData(conv);
     const text = userText.trim();
     if (text.toLowerCase() === 'cancel') return { message: 'Cancelled.', done: true };
 
-    const tasks = db.prepare("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at ASC LIMIT 20").all();
+    const tasks = await db.query("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC", []);
     let task;
     const num = parseInt(text, 10);
     if (!isNaN(num) && num >= 1 && num <= tasks.length) {
       task = tasks[num - 1];
     } else {
-      task = db.prepare("SELECT * FROM tasks WHERE id LIKE ? AND status='open' LIMIT 1").get(text + '%');
+      task = await db.queryOne("SELECT * FROM tasks WHERE id LIKE ? AND status='open' LIMIT 1", [text + '%']);
     }
 
     if (!task) {
-      return { message: `Task not found. Enter a valid number or ID prefix (or \`cancel\`):`, done: false, data: getData(conv), step: 0 };
+      return { message: `Task not found. Enter a valid number or ID prefix (or \`cancel\`):`, done: false, data, step: 0 };
     }
 
     const now = new Date().toISOString();
-    const result = db.prepare(
-      "UPDATE tasks SET status='claimed', assignee=?, claimed_at=?, updated_at=? WHERE id=? AND status='open'"
-    ).run(conv.user_id, now, now, task.id);
+    const result = await db.run(
+      "UPDATE tasks SET status='claimed', assignee=?, claimed_at=?, updated_at=? WHERE id=? AND status='open'",
+      [conv.user_id, now, now, task.id]
+    );
 
     if (result.changes === 0) {
       return { message: `**${task.title}** was just claimed by someone else.`, done: true };
@@ -278,9 +286,10 @@ const task_claim = {
 
 const task_done = {
   async start(db, userId, channelId, args) {
-    const tasks = db.prepare(
-      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC"
-    ).all(userId);
+    const tasks = await db.query(
+      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC",
+      [userId]
+    );
     if (!tasks.length) return { message: 'You have no claimed or in-progress tasks.', done: true };
     return { message: `**Your Tasks:**\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to mark done:`, done: false };
   },
@@ -290,9 +299,10 @@ const task_done = {
 
     if (conv.step === 0) {
       if (text.toLowerCase() === 'cancel') return { message: 'Cancelled.', done: true };
-      const tasks = db.prepare(
-        "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC"
-      ).all(conv.user_id);
+      const tasks = await db.query(
+        "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC",
+        [conv.user_id]
+      );
       let task;
       const num = parseInt(text, 10);
       if (!isNaN(num) && num >= 1 && num <= tasks.length) {
@@ -306,9 +316,12 @@ const task_done = {
 
     if (conv.step === 1) {
       const now = new Date().toISOString();
-      db.prepare("UPDATE tasks SET status='done', updated_at=? WHERE id=?").run(now, data.taskId);
+      await db.run("UPDATE tasks SET status='done', updated_at=? WHERE id=?", [now, data.taskId]);
       if (text) {
-        db.prepare("INSERT INTO task_history (task_id, actor, action, note, ts) VALUES (?, ?, 'done', ?, ?)").run(data.taskId, conv.user_id, text, now);
+        await db.run(
+          "INSERT INTO task_history (task_id, actor, action, note, ts) VALUES (?, ?, 'done', ?, ?)",
+          [data.taskId, conv.user_id, text, now]
+        );
       }
       return { message: `**${data.taskTitle}** marked as done.`, done: true };
     }
@@ -321,9 +334,10 @@ const task_done = {
 
 const task_block = {
   async start(db, userId, channelId, args) {
-    const tasks = db.prepare(
-      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC"
-    ).all(userId);
+    const tasks = await db.query(
+      "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC",
+      [userId]
+    );
     if (!tasks.length) return { message: 'You have no in-progress tasks.', done: true };
     return { message: `**Your Tasks:**\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to mark blocked:`, done: false };
   },
@@ -333,9 +347,10 @@ const task_block = {
 
     if (conv.step === 0) {
       if (text.toLowerCase() === 'cancel') return { message: 'Cancelled.', done: true };
-      const tasks = db.prepare(
-        "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC"
-      ).all(conv.user_id);
+      const tasks = await db.query(
+        "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC",
+        [conv.user_id]
+      );
       let task;
       const num = parseInt(text, 10);
       if (!isNaN(num) && num >= 1 && num <= tasks.length) {
@@ -350,8 +365,11 @@ const task_block = {
     if (conv.step === 1) {
       const reason = text || '(no reason given)';
       const now = new Date().toISOString();
-      db.prepare("UPDATE tasks SET status='blocked', updated_at=? WHERE id=?").run(now, data.taskId);
-      db.prepare("INSERT INTO task_history (task_id, actor, action, note, ts) VALUES (?, ?, 'blocked', ?, ?)").run(data.taskId, conv.user_id, reason, now);
+      await db.run("UPDATE tasks SET status='blocked', updated_at=? WHERE id=?", [now, data.taskId]);
+      await db.run(
+        "INSERT INTO task_history (task_id, actor, action, note, ts) VALUES (?, ?, 'blocked', ?, ?)",
+        [data.taskId, conv.user_id, reason, now]
+      );
       return { message: `**${data.taskTitle}** marked as blocked.\nReason: ${reason}`, done: true };
     }
 
@@ -410,9 +428,10 @@ const task_add = {
       }
       const id = randomUUID();
       const now = new Date().toISOString();
-      db.prepare(
-        "INSERT INTO tasks (id, title, description, status, source, external_id, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'manual', ?, ?, '[]', ?, ?, '{}')"
-      ).run(id, data.title, data.description || '', id, priority, now, now);
+      await db.run(
+        "INSERT INTO tasks (id, title, description, status, source, external_id, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'manual', ?, ?, '[]', ?, ?, '{}')",
+        [id, data.title, data.description || '', id, priority, now, now]
+      );
       return { message: `Task **${data.title}** created (\`${id.slice(0, 8)}\`).`, done: true };
     }
 
@@ -430,7 +449,7 @@ async function _addGithub(db, data, text) {
 
   let ghToken = process.env.GITHUB_TOKEN;
   if (!ghToken) {
-    const row = db.prepare("SELECT config_encrypted FROM adapters_config WHERE type='github' AND status='active' LIMIT 1").get();
+    const row = await db.queryOne("SELECT config_encrypted FROM adapters_config WHERE type='github' AND status='active' LIMIT 1", []);
     if (row) {
       const cfg = tryDecryptCfg(row.config_encrypted);
       ghToken = cfg.token || null;
@@ -453,9 +472,10 @@ async function _addGithub(db, data, text) {
   const now = new Date().toISOString();
   const extId = `${owner}/${repo}#${number}`;
   try {
-    db.prepare(
-      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'github', ?, ?, 0, ?, ?, ?, '{}')"
-    ).run(id, issue.title, (issue.body || '').slice(0, 500), extId, issue.html_url, JSON.stringify((issue.labels || []).map(l => l.name)), now, now);
+    await db.run(
+      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'github', ?, ?, 0, ?, ?, ?, '{}')",
+      [id, issue.title, (issue.body || '').slice(0, 500), extId, issue.html_url, JSON.stringify((issue.labels || []).map(l => l.name)), now, now]
+    );
   } catch (err) {
     if (err.message.includes('UNIQUE')) return { message: `Task for ${extId} already exists.`, done: true };
     return { message: `DB error: ${err.message}`, done: true };
@@ -471,7 +491,7 @@ async function _addJira(db, data, text) {
   else if (keyMatch) issueKey = keyMatch[1].toUpperCase();
   else return { message: 'Invalid format. Use `PROJECT-123` or a Jira browse URL:', done: false, data, step: 1 };
 
-  const row = db.prepare("SELECT config_encrypted FROM adapters_config WHERE type='jira' AND status='active' LIMIT 1").get();
+  const row = await db.queryOne("SELECT config_encrypted FROM adapters_config WHERE type='jira' AND status='active' LIMIT 1", []);
   if (!row) return { message: 'No Jira adapter configured. Add one with `/qw adapter add jira` first.', done: true };
 
   let jiraUrl, jiraToken;
@@ -500,9 +520,10 @@ async function _addJira(db, data, text) {
   const title = issue.fields?.summary || issueKey;
   const desc = (issue.fields?.description?.content?.[0]?.content?.[0]?.text || '').slice(0, 500);
   try {
-    db.prepare(
-      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'jira', ?, ?, 0, '[]', ?, ?, '{}')"
-    ).run(id, title, desc, issueKey, `${jiraUrl}/browse/${issueKey}`, now, now);
+    await db.run(
+      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'jira', ?, ?, 0, '[]', ?, ?, '{}')",
+      [id, title, desc, issueKey, `${jiraUrl}/browse/${issueKey}`, now, now]
+    );
   } catch (err) {
     if (err.message.includes('UNIQUE')) return { message: `Task for ${issueKey} already exists.`, done: true };
     return { message: `DB error: ${err.message}`, done: true };
@@ -511,7 +532,7 @@ async function _addJira(db, data, text) {
 }
 
 async function _addBeads(db, data, text) {
-  const row = db.prepare("SELECT config_encrypted FROM adapters_config WHERE type='beads' AND status='active' LIMIT 1").get();
+  const row = await db.queryOne("SELECT config_encrypted FROM adapters_config WHERE type='beads' AND status='active' LIMIT 1", []);
   if (!row) return { message: 'No Beads adapter configured. Add one with `/qw adapter add beads` first.', done: true };
 
   let endpoint, beadsToken;
@@ -537,9 +558,10 @@ async function _addBeads(db, data, text) {
   const id = randomUUID();
   const now = new Date().toISOString();
   try {
-    db.prepare(
-      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'beads', ?, ?, 0, '[]', ?, ?, '{}')"
-    ).run(id, task.title || taskId, (task.description || '').slice(0, 500), taskId, task.url || `${endpoint}/tasks/${taskId}`, now, now);
+    await db.run(
+      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'beads', ?, ?, 0, '[]', ?, ?, '{}')",
+      [id, task.title || taskId, (task.description || '').slice(0, 500), taskId, task.url || `${endpoint}/tasks/${taskId}`, now, now]
+    );
   } catch (err) {
     if (err.message.includes('UNIQUE')) return { message: `Task for beads:${taskId} already exists.`, done: true };
     return { message: `DB error: ${err.message}`, done: true };
@@ -556,7 +578,7 @@ const config_set_channel = {
   async step(db, conv, userText) {
     const channel = userText.trim().replace(/^#/, '');
     if (!channel) return { message: 'Channel name cannot be empty:', done: false, data: getData(conv), step: 0 };
-    db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('mm_channel', ?)").run(channel);
+    await db.run("INSERT OR REPLACE INTO config (key, value) VALUES ('mm_channel', ?)", [channel]);
     return { message: `Notification channel set to **#${channel}**.`, done: true };
   },
 };
@@ -565,14 +587,14 @@ const config_set_channel = {
 
 const config_set_sync_interval = {
   async start(db, userId, channelId, args) {
-    const row = db.prepare("SELECT value FROM config WHERE key='sync_interval_seconds'").get();
+    const row = await db.queryOne("SELECT value FROM config WHERE key='sync_interval_seconds'", []);
     const current = row?.value || '60';
     return { message: `Current sync interval: **${current}s**\nEnter new interval in seconds (min 10):`, done: false };
   },
   async step(db, conv, userText) {
     const val = parseInt(userText.trim(), 10);
     if (isNaN(val) || val < 10) return { message: 'Enter a number ≥ 10:', done: false, data: getData(conv), step: 0 };
-    db.prepare("INSERT OR REPLACE INTO config (key, value) VALUES ('sync_interval_seconds', ?)").run(String(val));
+    await db.run("INSERT OR REPLACE INTO config (key, value) VALUES ('sync_interval_seconds', ?)", [String(val)]);
     return { message: `Sync interval set to **${val}s**. Restart server to apply.`, done: true };
   },
 };
@@ -581,7 +603,7 @@ const config_set_sync_interval = {
 
 const config_show = {
   async start(db, userId, channelId, args) {
-    const rows = db.prepare('SELECT key, value FROM config ORDER BY key').all();
+    const rows = await db.query('SELECT key, value FROM config ORDER BY key', []);
     if (!rows.length) return { message: 'No configuration set.', done: true };
     const lines = rows.map(r => {
       const v = (r.key.includes('token') || r.key.includes('secret')) ? `...${r.value.slice(-4)}` : r.value;

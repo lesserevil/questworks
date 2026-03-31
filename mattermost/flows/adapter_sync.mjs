@@ -6,7 +6,7 @@ export async function handle(ctx) {
 
   switch (step) {
     case 0: {
-      const rows = loadAdapterConfigs(db);
+      const rows = await loadAdapterConfigs(db);
       if (rows.length === 0) {
         return { reply: 'No adapters configured. Use `/qw adapter add github` to add one.', done: true };
       }

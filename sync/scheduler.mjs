@@ -43,79 +43,91 @@ export class SyncScheduler {
 
     try {
       const tasks = await adapter.pull();
-      const upsert = this.db.prepare(`
-        INSERT INTO tasks (id, title, description, status, assignee, claimed_at, source, external_id, external_url, labels, priority, created_at, updated_at, metadata)
-        VALUES (@id, @title, @description, @status, @assignee, @claimed_at, @source, @external_id, @external_url, @labels, @priority, @created_at, @updated_at, @metadata)
-        ON CONFLICT(source, external_id) DO UPDATE SET
-          title=excluded.title,
-          description=excluded.description,
-          external_url=excluded.external_url,
-          labels=excluded.labels,
-          priority=excluded.priority,
-          updated_at=excluded.updated_at,
-          metadata=excluded.metadata
-        WHERE tasks.status = 'open'
-      `);
 
-      const insertTx = this.db.transaction((taskList) => {
-        let newCount = 0;
-        for (const task of taskList) {
-          const existing = this.db.prepare('SELECT id FROM tasks WHERE source=? AND external_id=?')
-            .get(task.source, task.external_id);
+      // Upsert all tasks in a single transaction
+      const newTaskIds = await this.db.transaction(async (txDb) => {
+        const newIds = [];
+        for (const task of tasks) {
+          const existing = await txDb.queryOne(
+            'SELECT id FROM tasks WHERE source=? AND external_id=?',
+            [task.source, task.external_id]
+          );
+
           const serialized = {
             ...task,
             labels: JSON.stringify(task.labels || []),
             metadata: JSON.stringify(task.metadata || {}),
           };
-          upsert.run(serialized);
-          if (!existing) newCount++;
+
+          await txDb.run(`
+            INSERT INTO tasks (id, title, description, status, assignee, claimed_at, source, external_id, external_url, labels, priority, created_at, updated_at, metadata)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(source, external_id) DO UPDATE SET
+              title=excluded.title,
+              description=excluded.description,
+              external_url=excluded.external_url,
+              labels=excluded.labels,
+              priority=excluded.priority,
+              updated_at=excluded.updated_at,
+              metadata=excluded.metadata
+            WHERE tasks.status = 'open'
+          `, [
+            serialized.id, serialized.title, serialized.description,
+            serialized.status, serialized.assignee, serialized.claimed_at,
+            serialized.source, serialized.external_id, serialized.external_url,
+            serialized.labels, serialized.priority,
+            serialized.created_at, serialized.updated_at, serialized.metadata,
+          ]);
+
+          if (!existing) newIds.push({ source: task.source, external_id: task.external_id });
         }
-        return newCount;
+        return newIds;
       });
 
-      const newTasks = insertTx(tasks);
       count = tasks.length;
 
-      // Notify for new tasks
-      if (this.notifier && newTasks > 0) {
-        for (const task of tasks) {
-          const existing = this.db.prepare('SELECT id FROM tasks WHERE source=? AND external_id=?')
-            .get(task.source, task.external_id);
-          if (existing) {
-            const fullTask = this.db.prepare('SELECT * FROM tasks WHERE id=?').get(existing.id);
-            if (fullTask) {
-              const deserialized = {
-                ...fullTask,
-                labels: JSON.parse(fullTask.labels || '[]'),
-                metadata: JSON.parse(fullTask.metadata || '{}'),
-              };
-              // Skip notification if we already have a Mattermost post for this task
-              if (deserialized.metadata.mm_post_id) continue;
+      // Notify for genuinely new tasks (those that weren't in DB before upsert)
+      if (this.notifier && newTaskIds.length > 0) {
+        for (const { source, external_id } of newTaskIds) {
+          const row = await this.db.queryOne(
+            'SELECT * FROM tasks WHERE source=? AND external_id=?',
+            [source, external_id]
+          );
+          if (!row) continue;
 
-              this.notifier.onNewTask(deserialized)
-                .then((postId) => {
-                  if (postId) {
-                    const meta = { ...deserialized.metadata, mm_post_id: postId };
-                    this.db.prepare('UPDATE tasks SET metadata=?, updated_at=? WHERE id=?')
-                      .run(JSON.stringify(meta), new Date().toISOString(), existing.id);
-                  }
-                })
-                .catch(err => console.error('[notify] new task failed:', err));
-            }
-          }
+          const deserialized = {
+            ...row,
+            labels: typeof row.labels === 'string' ? JSON.parse(row.labels || '[]') : (row.labels ?? []),
+            metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata || '{}') : (row.metadata ?? {}),
+          };
+
+          // Skip if we already have a Mattermost post for this task
+          if (deserialized.metadata.mm_post_id) continue;
+
+          this.notifier.onNewTask(deserialized)
+            .then(async (postId) => {
+              if (postId) {
+                const meta = { ...deserialized.metadata, mm_post_id: postId };
+                await this.db.run(
+                  'UPDATE tasks SET metadata=?, updated_at=? WHERE id=?',
+                  [JSON.stringify(meta), new Date().toISOString(), row.id]
+                );
+              }
+            })
+            .catch(err => console.error('[notify] new task failed:', err));
         }
       }
 
-      this.db.prepare(`
-        INSERT OR REPLACE INTO adapter_state (adapter_id, last_sync, task_count, status)
-        VALUES (?, ?, ?, 'ok')
-      `).run(adapterId, now, count);
+      await this.db.run(
+        `INSERT OR REPLACE INTO adapter_state (adapter_id, last_sync, task_count, status) VALUES (?, ?, ?, 'ok')`,
+        [adapterId, now, count]
+      );
 
     } catch (err) {
-      this.db.prepare(`
-        INSERT OR REPLACE INTO adapter_state (adapter_id, last_sync, last_error, status)
-        VALUES (?, ?, ?, 'error')
-      `).run(adapterId, now, err.message);
+      await this.db.run(
+        `INSERT OR REPLACE INTO adapter_state (adapter_id, last_sync, last_error, status) VALUES (?, ?, ?, 'error')`,
+        [adapterId, now, err.message]
+      );
       throw err;
     }
 
