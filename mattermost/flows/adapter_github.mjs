@@ -59,10 +59,10 @@ export async function step(ctx, stepNum, message, data) {
         label_filter: data.label_filter,
       });
 
-      db.prepare(`
+      await db.run(`
         INSERT OR REPLACE INTO adapters_config (id, type, name, config_json_encrypted, created_at, status)
         VALUES (?, 'github', ?, ?, ?, 'ok')
-      `).run(name, name, configEncrypted, now);
+      `, [name, name, configEncrypted, now]);
 
       adapters.set(name, new GitHubAdapter(name, {
         repo: data.repo,

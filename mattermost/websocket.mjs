@@ -7,7 +7,7 @@ const TTL_SECONDS = 5 * 60;
  * conversation handlers. Only handles continuation messages — slash commands
  * start new conversations via POST /slash.
  *
- * @param {import('better-sqlite3').Database} db
+ * @param {import('../db/index.mjs').SqliteDb|import('../db/index.mjs').PostgresDb} db
  * @param {(db: any, post: any) => Promise<void>} handleConversationReply
  */
 export async function startWebSocket(db, handleConversationReply) {
@@ -17,7 +17,7 @@ export async function startWebSocket(db, handleConversationReply) {
     return;
   }
 
-  const tokenRow = db.prepare("SELECT value FROM config WHERE key='mm_bot_token'").get();
+  const tokenRow = await db.queryOne("SELECT value FROM config WHERE key = ?", ['mm_bot_token']);
   const token = tokenRow?.value || process.env.MM_BOT_TOKEN;
   if (!token) {
     console.warn('[ws] No mm_bot_token in config table and MM_BOT_TOKEN not set — skipping WebSocket');
@@ -68,13 +68,14 @@ export async function startWebSocket(db, handleConversationReply) {
       if (!message || !channel_id) return;
 
       // Only route if there is a non-expired active conversation
-      const conv = db.prepare(
-        'SELECT updated_at FROM conversations WHERE user_id=? AND channel_id=?'
-      ).get(user_id, channel_id);
+      const conv = await db.queryOne(
+        'SELECT updated_at FROM conversations WHERE user_id=? AND channel_id=?',
+        [user_id, channel_id]
+      );
       if (!conv) return;
 
       if ((Math.floor(Date.now() / 1000) - conv.updated_at) > TTL_SECONDS) {
-        db.prepare('DELETE FROM conversations WHERE user_id=? AND channel_id=?').run(user_id, channel_id);
+        await db.run('DELETE FROM conversations WHERE user_id=? AND channel_id=?', [user_id, channel_id]);
         return;
       }
 

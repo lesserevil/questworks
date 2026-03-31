@@ -52,15 +52,15 @@ export async function step(ctx, stepNum, message, data) {
       const name = text || `beads-${data.board_id}`;
       const now = new Date().toISOString();
 
-      db.prepare(`
+      await db.run(`
         INSERT OR REPLACE INTO adapters_config (id, type, name, config_json_encrypted, created_at, status)
         VALUES (?, 'beads', ?, ?, ?, 'ok')
-      `).run(name, name, encryptJson({
+      `, [name, name, encryptJson({
         endpoint: data.endpoint,
         token: data.token,
         token_masked: data.token_masked,
         board_id: data.board_id,
-      }), now);
+      }), now]);
 
       adapters.set(name, new BeadsAdapter(name, {
         endpoint: data.endpoint,
