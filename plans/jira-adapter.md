@@ -117,6 +117,11 @@ Tests live in `tests/adapters/jira.test.mjs`. Use a mock HTTP layer (stub `adapt
 - `adapters/base.mjs` — `BaseAdapter`, `normalizeTask()`
 - Jira REST API v3 (Cloud) / v2 (Server — same endpoints, minor schema differences)
 
+## Security Notes
+
+- The Jira API token is passed via config (environment variable). It must never be logged or included in error messages.
+- Token-at-rest encryption is governed by `DB_ENCRYPTION_KEY` (consistent with how slash flows handle stored adapter credentials per `plans/slash-flows.md`). The adapter config loader is responsible for decryption before passing config to the adapter constructor.
+
 ## Open Questions
 
 1. **Jira Server vs Cloud auth**: Cloud uses email+API token (basic auth). Server uses username+password or PAT. Should the adapter support both, or Cloud-only for now?  
