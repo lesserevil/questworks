@@ -54,7 +54,7 @@ export async function step(ctx, stepNum, message, data) {
       const now = new Date().toISOString();
 
       await db.run(`
-        INSERT OR REPLACE INTO adapters_config (id, type, name, config_json_encrypted, created_at, status)
+        INSERT OR REPLACE INTO adapters_config (id, type, name, config_encrypted, created_at, status)
         VALUES (?, 'jira', ?, ?, ?, 'ok')
       `, [name, name, encryptJson({
         url: data.url,
