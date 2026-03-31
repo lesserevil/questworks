@@ -145,8 +145,10 @@ No removal of `better-sqlite3` — it stays as the SQLite driver.
 
 - **SQLite WAL mode** and `foreign_keys = ON` pragmas must be preserved in `sqlite.mjs`.
 - **Postgres pool**: default pool size 10; configurable via `DATABASE_URL` query param (`?max=5`).
+- **DSN masking**: The Postgres adapter must never log the full `DATABASE_URL`. On startup, log only the host and database name (strip credentials). In error messages, replace any captured DSN with a masked form (`postgres://***@host/db`). This applies to both info-level startup logs and error stack traces.
 - **Atomic claim**: existing `UPDATE tasks SET status='claimed' WHERE id=? AND status='open'` pattern works on both backends. Check `changes === 1` (SQLite) and `rowCount === 1` (Postgres) — the adapter layer normalises to `{ changes }`.
-- **JSON handling**: SQLite stores JSON as TEXT — `JSON.stringify`/`JSON.parse` at the adapter boundary. Postgres `JSONB` columns return parsed objects — adapter must handle both transparently.
+- **JSON handling**: JSON serialization/deserialization (`JSON.stringify`/`JSON.parse` for SQLite TEXT columns; identity for Postgres `JSONB`) belongs entirely inside `db/sqlite.mjs` and `db/postgres.mjs`. Routes and other callers always work with plain JS objects and must not contain any JSON boundary logic.
+- **SQLite transaction shim**: `better-sqlite3` transactions are synchronous. The `db.transaction()` shim in `db/sqlite.mjs` must `await fn(db)` internally so that async-aware callers get correct rollback behaviour on error. Do not call `fn(db)` without `await`.
 - **Migration strategy**: `initDb()` runs the full schema (`CREATE TABLE IF NOT EXISTS` / Postgres equivalent). No versioned migration framework needed at this stage — the app has never been in production.
 
 ---
