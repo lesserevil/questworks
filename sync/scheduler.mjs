@@ -84,11 +84,23 @@ export class SyncScheduler {
           if (existing) {
             const fullTask = this.db.prepare('SELECT * FROM tasks WHERE id=?').get(existing.id);
             if (fullTask) {
-              this.notifier.onNewTask({
+              const deserialized = {
                 ...fullTask,
                 labels: JSON.parse(fullTask.labels || '[]'),
                 metadata: JSON.parse(fullTask.metadata || '{}'),
-              }).catch(err => console.error('[notify] new task failed:', err));
+              };
+              // Skip notification if we already have a Mattermost post for this task
+              if (deserialized.metadata.mm_post_id) continue;
+
+              this.notifier.onNewTask(deserialized)
+                .then((postId) => {
+                  if (postId) {
+                    const meta = { ...deserialized.metadata, mm_post_id: postId };
+                    this.db.prepare('UPDATE tasks SET metadata=?, updated_at=? WHERE id=?')
+                      .run(JSON.stringify(meta), new Date().toISOString(), existing.id);
+                  }
+                })
+                .catch(err => console.error('[notify] new task failed:', err));
             }
           }
         }

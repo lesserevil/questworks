@@ -39,16 +39,20 @@ export class MattermostNotifier {
 
   async onClaimed(task) {
     if (!this.enabled) return;
+    const postId = task.metadata?.mm_post_id;
     await this._post('/api/v4/posts', {
       channel_id: await this._getChannelId(),
+      ...(postId ? { root_id: postId } : {}),
       message: `**${task.title}** claimed by @${task.assignee}`,
     });
   }
 
   async onCompleted(task) {
     if (!this.enabled) return;
+    const postId = task.metadata?.mm_post_id;
     await this._post('/api/v4/posts', {
       channel_id: await this._getChannelId(),
+      ...(postId ? { root_id: postId } : {}),
       message: `✅ **${task.title}** completed`,
     });
   }
