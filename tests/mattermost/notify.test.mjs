@@ -7,7 +7,7 @@
 
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import { MattermostNotifier } from '/tmp/questworks-test/mattermost/notify.mjs';
+import { MattermostNotifier } from '../../mattermost/notify.mjs';
 
 // --- Helpers ---
 
@@ -68,7 +68,7 @@ function makeDb(existingTask = null) {
 }
 
 // Import scheduler for T3/T4/T9
-import { SyncScheduler } from '/tmp/questworks-test/sync/scheduler.mjs';
+import { SyncScheduler } from '../../sync/scheduler.mjs';
 
 // --- Tests ---
 
