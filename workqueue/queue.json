@@ -271,6 +271,52 @@
             "lastAttempt": null,
             "completedAt": null,
             "result": null
+        },
+        {
+            "id": "wq-DQ-011",
+            "itemVersion": 1,
+            "created": "2026-04-02T00:19:00.000Z",
+            "source": "race",
+            "assignee": null,
+            "priority": "high",
+            "status": "pending",
+            "title": "Fix LLM error handler",
+            "description": "LLM failures are posting raw errors to the Mattermost channel instead of logging internally. Observed: drquest flooding #project-questworks on 2026-04-01. Errors should be logged, not broadcast.",
+            "tags": [
+                "bugfix",
+                "llm",
+                "mattermost"
+            ],
+            "claimedBy": null,
+            "claimedAt": null,
+            "attempts": 0,
+            "maxAttempts": 3,
+            "lastAttempt": null,
+            "completedAt": null,
+            "result": null
+        },
+        {
+            "id": "wq-RC-011",
+            "itemVersion": 1,
+            "created": "2026-04-02T00:19:00.000Z",
+            "source": "race",
+            "assignee": null,
+            "priority": "high",
+            "status": "pending",
+            "title": "Fix QUESTWORKS_API env var in ARM template",
+            "description": "Add QUESTWORKS_API as a direct container-level environment variable in the ARM template. Current entrypoint export doesn't reach the exec sandbox, so agents can't reach the API.",
+            "tags": [
+                "bugfix",
+                "infra",
+                "arm-template"
+            ],
+            "claimedBy": null,
+            "claimedAt": null,
+            "attempts": 0,
+            "maxAttempts": 3,
+            "lastAttempt": null,
+            "completedAt": null,
+            "result": null
         }
     ],
     "completed": [],
