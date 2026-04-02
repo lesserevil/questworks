@@ -4,6 +4,46 @@ import { randomUUID } from 'crypto';
 export function createTaskRoutes(db, notifier, adapters) {
   const router = Router();
 
+  // POST /tasks — create a new task via API
+  router.post('/', async (req, res) => {
+    const { title, description, labels, priority, metadata, assignee } = req.body;
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      return res.status(400).json({ error: 'title is required' });
+    }
+    const id = randomUUID();
+    const externalId = `api-${id}`;
+    const now = new Date().toISOString();
+    try {
+      await db.run(
+        `INSERT INTO tasks (id, title, description, status, assignee, source, external_id, labels, priority, created_at, updated_at, metadata)
+         VALUES (?, ?, ?, 'open', ?, 'api', ?, ?, ?, ?, ?, ?)`,
+        [
+          id,
+          title.trim(),
+          description || null,
+          assignee || null,
+          externalId,
+          JSON.stringify(labels || []),
+          priority ?? 0,
+          now,
+          now,
+          JSON.stringify(metadata || {}),
+        ]
+      );
+      await recordHistory(db, id, req.body.agent || 'api', 'create', null, 'open');
+      const task = deserializeTask(await db.queryOne('SELECT * FROM tasks WHERE id = ?', [id]));
+      if (notifier) {
+        notifier.onCreated?.(task)?.catch(err => console.error('[notify] create failed:', err));
+      }
+      res.status(201).json(task);
+    } catch (err) {
+      if (err.message?.includes('UNIQUE')) {
+        return res.status(409).json({ error: 'duplicate task' });
+      }
+      res.status(500).json({ error: err.message });
+    }
+  });
+
   // GET /tasks — list with optional filters
   router.get('/', async (req, res) => {
     const { status, source, assignee } = req.query;
