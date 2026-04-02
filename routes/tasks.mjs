@@ -6,7 +6,7 @@ export function createTaskRoutes(db, notifier, adapters) {
 
   // POST /tasks — create a new task via API
   router.post('/', async (req, res) => {
-    const { title, description, labels, priority, metadata, assignee } = req.body;
+    const { title, description, labels, priority, metadata, assignee } = req.body || {};
     if (!title || typeof title !== 'string' || !title.trim()) {
       return res.status(400).json({ error: 'title is required' });
     }
@@ -30,7 +30,7 @@ export function createTaskRoutes(db, notifier, adapters) {
           JSON.stringify(metadata || {}),
         ]
       );
-      await recordHistory(db, id, req.body.agent || 'api', 'create', null, 'open');
+      await recordHistory(db, id, (req.body && req.body.agent) || 'api', 'create', null, 'open');
       const task = deserializeTask(await db.queryOne('SELECT * FROM tasks WHERE id = ?', [id]));
       if (notifier) {
         notifier.onCreated?.(task)?.catch(err => console.error('[notify] create failed:', err));
@@ -66,7 +66,7 @@ export function createTaskRoutes(db, notifier, adapters) {
 
   // POST /tasks/:id/claim — atomic claim
   router.post('/:id/claim', async (req, res) => {
-    const { agent } = req.body;
+    const { agent } = req.body || {};
     if (!agent) return res.status(400).json({ error: 'agent required' });
 
     let result;
@@ -105,14 +105,14 @@ export function createTaskRoutes(db, notifier, adapters) {
       `UPDATE tasks SET status='open', assignee=NULL, claimed_at=NULL, updated_at=? WHERE id=?`,
       [now, task.id]
     );
-    await recordHistory(db, task.id, req.body.agent, 'unclaim', task.assignee, null);
+    await recordHistory(db, task.id, (req.body && req.body.agent), 'unclaim', task.assignee, null);
     const updated = await db.queryOne('SELECT * FROM tasks WHERE id = ?', [task.id]);
     res.json(deserializeTask(updated));
   });
 
   // POST /tasks/:id/status
   router.post('/:id/status', async (req, res) => {
-    const { status, agent, comment } = req.body;
+    const { status, agent, comment } = req.body || {};
     const validStatuses = ['open', 'claimed', 'in_progress', 'review', 'done', 'blocked'];
     if (!status || !validStatuses.includes(status)) {
       return res.status(400).json({ error: `status must be one of: ${validStatuses.join(', ')}` });
@@ -133,7 +133,7 @@ export function createTaskRoutes(db, notifier, adapters) {
 
   // POST /tasks/:id/complete
   router.post('/:id/complete', async (req, res) => {
-    const { agent, comment } = req.body;
+    const { agent, comment } = req.body || {};
     const task = await db.queryOne('SELECT * FROM tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ error: 'not found' });
     const now = new Date().toISOString();
@@ -153,7 +153,7 @@ export function createTaskRoutes(db, notifier, adapters) {
 
   // POST /tasks/:id/comment
   router.post('/:id/comment', async (req, res) => {
-    const { agent, comment } = req.body;
+    const { agent, comment } = req.body || {};
     if (!comment) return res.status(400).json({ error: 'comment required' });
     const task = await db.queryOne('SELECT * FROM tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ error: 'not found' });
