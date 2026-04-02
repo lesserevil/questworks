@@ -2,18 +2,20 @@
  * Slash command router and conversation engine for /qw commands.
  *
  * Exports:
- *   createSlashRouter(db)              — Express router for POST /slash
- *   handleConversationReply(db, post)  — called by websocket for continuation messages
+ *   createSlashRouter(db, adapters, scheduler) — Express router for POST /slash
+ *   handleConversationReply(db, post)          — called by websocket
  *
  * Flow lifecycle:
  *  1. POST /slash → parse command → call flow.start() → post to channel → 200 OK
- *  2. Conversation state stored in `conversations` table (TTL: 5 min).
- *  3. Subsequent user messages via WebSocket → handleConversationReply().
+ *  2. If flow returns { dialog: true, dialogDef: {...} }, opens a MM interactive dialog.
+ *  3. Dialog submission hits POST /slash/dialog.
+ *  4. Non-dialog flows: conversation state stored in `conversations` table (TTL: 5 min).
+ *  5. Subsequent user messages via WebSocket → handleConversationReply().
  */
 import { Router } from 'express';
 import express from 'express';
 import { randomUUID } from 'crypto';
-import { flows } from './flows/index.mjs';
+import { flows, handleDialogSubmit } from './flows/index.mjs';
 
 const TTL_MS = 5 * 60 * 1000;
 
@@ -39,6 +41,19 @@ async function postToMm(db, channelId, message) {
   } catch (err) {
     console.error('[slash] postToMm error:', err.message);
   }
+}
+
+async function openMmDialog(db, triggerId, callbackUrl, dialog) {
+  const { url, token } = await mmCreds(db);
+  if (!url || !token) { console.error('[slash] openMmDialog: MM_URL or token not configured'); return; }
+  try {
+    const resp = await fetch(`${url}/api/v4/actions/dialogs/open`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ trigger_id: triggerId, url: callbackUrl, dialog }),
+    });
+    if (!resp.ok) console.error(`[slash] openMmDialog failed ${resp.status}: ${await resp.text()}`);
+  } catch (err) { console.error('[slash] openMmDialog error:', err.message); }
 }
 
 // ── Command parser ────────────────────────────────────────────────────────────
@@ -74,13 +89,14 @@ function parseCommand(text) {
 
 // ── Slash router ──────────────────────────────────────────────────────────────
 
-export function createSlashRouter(db) {
+export function createSlashRouter(db, adapters, scheduler) {
   const router = Router();
   // Mattermost sends slash command payloads as application/x-www-form-urlencoded
   router.use(express.urlencoded({ extended: false }));
+  router.use(express.json());
 
   router.post('/', async (req, res) => {
-    const { user_id, channel_id, text } = req.body || {};
+    const { user_id, channel_id, text, trigger_id } = req.body || {};
     if (!user_id || !channel_id) {
       return res.status(400).send('');
     }
@@ -113,6 +129,20 @@ export function createSlashRouter(db) {
       return;
     }
 
+    // Dialog flow
+    if (result.dialog && result.dialogDef) {
+      if (!trigger_id) {
+        await postToMm(db, channel_id, `⚠️ Cannot open dialog: \`trigger_id\` not provided.`);
+        return;
+      }
+      const baseUrl = process.env.QUESTWORKS_PUBLIC_URL || `http://localhost:${process.env.PORT || 8788}`;
+      await openMmDialog(db, trigger_id, `${baseUrl}/slash/dialog`, {
+        ...result.dialogDef,
+        callback_id: JSON.stringify({ flowName, userId: user_id, channelId: channel_id }),
+      });
+      return;
+    }
+
     await postToMm(db, channel_id, result.message);
 
     if (!result.done) {
@@ -122,6 +152,21 @@ export function createSlashRouter(db) {
         [randomUUID(), user_id, channel_id, flowName, '{}', now, now]
       );
     }
+  });
+
+  router.post('/dialog', async (req, res) => {
+    const { callback_id, submission, user_id, channel_id } = req.body || {};
+    res.status(200).json({});  // dismiss dialog immediately
+    let context = {};
+    try { context = typeof callback_id === 'string' ? JSON.parse(callback_id) : (callback_id || {}); }
+    catch { console.error('[slash/dialog] Failed to parse callback_id:', callback_id); return; }
+    const { flowName, channelId: ctxChannelId } = context;
+    const effectiveChannelId = channel_id || ctxChannelId;
+    if (!flowName) { console.error('[slash/dialog] Missing flowName'); return; }
+    let message;
+    try { message = await handleDialogSubmit(db, flowName, submission || {}, adapters, scheduler); }
+    catch (err) { message = `Error saving adapter: ${err.message}`; }
+    if (message && effectiveChannelId) await postToMm(db, effectiveChannelId, message);
   });
 
   return router;

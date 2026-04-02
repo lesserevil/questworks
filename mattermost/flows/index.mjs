@@ -47,124 +47,118 @@ async function fmtAdapters(db) {
   }).join('\n');
 }
 
-// ── adapter_add_github ────────────────────────────────────────────────────────
+// ── adapter_add_github (dialog-based) ────────────────────────────────────────
 
 const adapter_add_github = {
   async start(db, userId, channelId, args) {
-    return { message: 'Adding a GitHub adapter.\nStep 1/4 — Repo (`owner/repo`):', done: false };
+    return {
+      dialog: true,
+      done: true,
+      dialogDef: {
+        title: 'Add GitHub Adapter',
+        submit_label: 'Add',
+        elements: [
+          { display_name: 'Repository', name: 'repo', type: 'text', placeholder: 'owner/repo', optional: false },
+          { display_name: 'Personal Access Token', name: 'token', type: 'text', placeholder: 'ghp_...', optional: false },
+          { display_name: 'Label filter', name: 'label', type: 'text', placeholder: 'questworks', optional: false },
+          { display_name: 'Adapter name (optional)', name: 'name', type: 'text', optional: true },
+        ],
+      },
+    };
   },
-  async step(db, conv, userText) {
-    const data = getData(conv);
-    const text = userText.trim();
-
-    if (conv.step === 0) {
-      if (!/^[\w.-]+\/[\w.-]+$/.test(text)) {
-        return { message: 'Invalid format. Use `owner/repo` (e.g. `acme/widget`):', done: false, data, step: 0 };
-      }
-      return { message: 'Step 2/4 — Paste your GitHub personal access token:', done: false, data: { ...data, repo: text }, step: 1 };
-    }
-
-    if (conv.step === 1) {
-      if (!text) return { message: 'Token cannot be empty:', done: false, data, step: 1 };
-      return { message: 'Step 3/4 — Label filter (required, e.g. `questworks`):', done: false, data: { ...data, token: encrypt(text) }, step: 2 };
-    }
-
-    if (conv.step === 2) {
-      if (!text) return { message: 'Label filter is required. Enter a label (e.g. `questworks`):', done: false, data, step: 2 };
-      const slug = data.repo.replace('/', '-');
-      return { message: `Step 4/4 — Adapter name (optional, Enter for \`github-${slug}\`):`, done: false, data: { ...data, label: text }, step: 3 };
-    }
-
-    if (conv.step === 3) {
-      const slug = data.repo.replace('/', '-');
-      const name = isSkip(text) ? `github-${slug}` : text;
-      const id = randomUUID();
-      const rawToken = decrypt(data.token);
-      const cfg = { repo: data.repo, token: rawToken, label_filter: data.label };
-      await db.run(
-        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, 'github', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
-      );
-      return { message: `GitHub adapter **${name}** added (\`${id.slice(0, 8)}\`). Sync runs on next scheduled interval.`, done: true };
-    }
-
-    return { message: 'Unexpected state. Try starting over.', done: true };
-  },
+  async step(db, conv, userText) { return { message: 'Use `/qw adapter add github` to open the dialog.', done: true }; },
 };
 
-// ── adapter_add_beads ─────────────────────────────────────────────────────────
+// ── adapter_add_beads (dialog-based) ──────────────────────────────────────────
 
 const adapter_add_beads = {
   async start(db, userId, channelId, args) {
-    return { message: 'Adding a Beads adapter.\nStep 1/4 — Endpoint URL:', done: false };
+    return {
+      dialog: true,
+      done: true,
+      dialogDef: {
+        title: 'Add Beads Adapter',
+        submit_label: 'Add',
+        elements: [
+          { display_name: 'Endpoint URL', name: 'endpoint', type: 'text', placeholder: 'https://...', optional: false },
+          { display_name: 'API Token', name: 'token', type: 'text', placeholder: 'Paste your Beads API token', optional: false },
+          { display_name: 'Board ID', name: 'board_id', type: 'text', placeholder: 'board-id', optional: false },
+          { display_name: 'Adapter name (optional)', name: 'name', type: 'text', optional: true },
+        ],
+      },
+    };
   },
-  async step(db, conv, userText) {
-    const data = getData(conv);
-    const text = userText.trim();
-
-    if (conv.step === 0) {
-      if (!text) return { message: 'Endpoint cannot be empty:', done: false, data, step: 0 };
-      return { message: 'Step 2/4 — Beads API token:', done: false, data: { ...data, endpoint: text }, step: 1 };
-    }
-    if (conv.step === 1) {
-      if (!text) return { message: 'Token cannot be empty:', done: false, data, step: 1 };
-      return { message: 'Step 3/4 — Board ID:', done: false, data: { ...data, token: encrypt(text) }, step: 2 };
-    }
-    if (conv.step === 2) {
-      if (!text) return { message: 'Board ID cannot be empty:', done: false, data, step: 2 };
-      return { message: 'Step 4/4 — Adapter name (optional, Enter to skip):', done: false, data: { ...data, board_id: text }, step: 3 };
-    }
-    if (conv.step === 3) {
-      const name = isSkip(text) ? `beads-${data.board_id}` : text;
-      const id = randomUUID();
-      const cfg = { endpoint: data.endpoint, token: decrypt(data.token), board_id: data.board_id };
-      await db.run(
-        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, 'beads', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
-      );
-      return { message: `Beads adapter **${name}** added (\`${id.slice(0, 8)}\`).`, done: true };
-    }
-
-    return { message: 'Unexpected state. Try starting over.', done: true };
-  },
+  async step(db, conv, userText) { return { message: 'Use `/qw adapter add beads` to open the dialog.', done: true }; },
 };
 
-// ── adapter_add_jira ──────────────────────────────────────────────────────────
+// ── adapter_add_jira (dialog-based) ───────────────────────────────────────────
 
 const adapter_add_jira = {
   async start(db, userId, channelId, args) {
-    return { message: 'Adding a Jira adapter.\nStep 1/4 — Jira URL (e.g. `https://company.atlassian.net`):', done: false };
+    return {
+      dialog: true,
+      done: true,
+      dialogDef: {
+        title: 'Add Jira Adapter',
+        submit_label: 'Add',
+        elements: [
+          { display_name: 'Jira URL', name: 'url', type: 'text', placeholder: 'https://yourco.atlassian.net', optional: false },
+          { display_name: 'API Token', name: 'token', type: 'text', placeholder: 'Paste your Jira API token', optional: false },
+          { display_name: 'Project Key', name: 'project', type: 'text', placeholder: 'QUEST', optional: false },
+          { display_name: 'Adapter name (optional)', name: 'name', type: 'text', optional: true },
+        ],
+      },
+    };
   },
-  async step(db, conv, userText) {
-    const data = getData(conv);
-    const text = userText.trim();
-
-    if (conv.step === 0) {
-      if (!text) return { message: 'URL cannot be empty:', done: false, data, step: 0 };
-      return { message: 'Step 2/4 — Jira API token:', done: false, data: { ...data, url: text }, step: 1 };
-    }
-    if (conv.step === 1) {
-      if (!text) return { message: 'Token cannot be empty:', done: false, data, step: 1 };
-      return { message: 'Step 3/4 — Project key (e.g. `QUEST`):', done: false, data: { ...data, token: encrypt(text) }, step: 2 };
-    }
-    if (conv.step === 2) {
-      if (!text) return { message: 'Project key cannot be empty:', done: false, data, step: 2 };
-      return { message: 'Step 4/4 — Adapter name (optional, Enter to skip):', done: false, data: { ...data, project: text }, step: 3 };
-    }
-    if (conv.step === 3) {
-      const name = isSkip(text) ? `jira-${data.project.toLowerCase()}` : text;
-      const id = randomUUID();
-      const cfg = { url: data.url, token: decrypt(data.token), project: data.project };
-      await db.run(
-        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, 'jira', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
-      );
-      return { message: `Jira adapter **${name}** added (\`${id.slice(0, 8)}\`).`, done: true };
-    }
-
-    return { message: 'Unexpected state. Try starting over.', done: true };
-  },
+  async step(db, conv, userText) { return { message: 'Use `/qw adapter add jira` to open the dialog.', done: true }; },
 };
+
+// ── handleDialogSubmit ────────────────────────────────────────────────────────
+
+export async function handleDialogSubmit(db, flowName, submission, adapters, scheduler) {
+  if (flowName === 'adapter_add_jira') {
+    const { url, token, project, name: rawName } = submission;
+    if (!url || !token || !project) return '⚠️ URL, token, and project key are all required.';
+    const name = rawName?.trim() || `jira-${project.trim().toLowerCase()}`;
+    const id = randomUUID();
+    const cfg = { url: url.trim(), token: token.trim(), project: project.trim().toUpperCase() };
+    await db.run('INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id, 'jira', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]);
+    if (adapters) { const { JiraAdapter } = await import('../../adapters/jira.mjs'); adapters.set(id, new JiraAdapter(id, cfg)); }
+    if (scheduler && !scheduler._timer) scheduler.start();
+    if (scheduler) scheduler.syncAdapter(id).catch(err => console.error(`[dialog] jira sync failed: ${err.message}`));
+    return `✅ Jira adapter **${name}** added (\`${id.slice(0, 8)}\`). Syncing in background…`;
+  }
+  if (flowName === 'adapter_add_github') {
+    const { repo, token, label, name: rawName } = submission;
+    if (!repo || !token || !label) return '⚠️ Repository, token, and label filter are all required.';
+    if (!/^[\w.-]+\/[\w.-]+$/.test(repo.trim())) return '⚠️ Repository must be in `owner/repo` format.';
+    const slug = repo.trim().replace('/', '-');
+    const name = rawName?.trim() || `github-${slug}`;
+    const id = randomUUID();
+    const cfg = { repo: repo.trim(), token: token.trim(), label_filter: label.trim() };
+    await db.run('INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id, 'github', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]);
+    if (adapters) { const { GitHubAdapter } = await import('../../adapters/github.mjs'); adapters.set(id, new GitHubAdapter(id, cfg)); }
+    if (scheduler && !scheduler._timer) scheduler.start();
+    if (scheduler) scheduler.syncAdapter(id).catch(err => console.error(`[dialog] github sync failed: ${err.message}`));
+    return `✅ GitHub adapter **${name}** added (\`${id.slice(0, 8)}\`). Syncing in background…`;
+  }
+  if (flowName === 'adapter_add_beads') {
+    const { endpoint, token, board_id, name: rawName } = submission;
+    if (!endpoint || !token || !board_id) return '⚠️ Endpoint, token, and board ID are all required.';
+    const name = rawName?.trim() || `beads-${board_id.trim()}`;
+    const id = randomUUID();
+    const cfg = { endpoint: endpoint.trim(), token: token.trim(), board_id: board_id.trim() };
+    await db.run('INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+      [id, 'beads', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]);
+    if (adapters) { const { BeadsAdapter } = await import('../../adapters/beads.mjs'); adapters.set(id, new BeadsAdapter(id, cfg)); }
+    if (scheduler && !scheduler._timer) scheduler.start();
+    if (scheduler) scheduler.syncAdapter(id).catch(err => console.error(`[dialog] beads sync failed: ${err.message}`));
+    return `✅ Beads adapter **${name}** added (\`${id.slice(0, 8)}\`). Syncing in background…`;
+  }
+  return `Unknown dialog flow: ${flowName}`;
+}
 
 // ── adapter_list ──────────────────────────────────────────────────────────────
 

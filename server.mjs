@@ -102,7 +102,7 @@ async function main() {
   // Routes
   app.use('/tasks', createTaskRoutes(db, notifier, adapters));
   app.use('/adapters', createAdapterRoutes(db, adapters, scheduler));
-  app.use('/slash', createSlashRouter(db));
+  app.use('/slash', createSlashRouter(db, adapters, scheduler));
 
   app.get('/health', (req, res) => {
     res.json({
