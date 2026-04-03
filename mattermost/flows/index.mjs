@@ -473,7 +473,7 @@ async function _addGithub(db, data, text) {
   const extId = `${owner}/${repo}#${number}`;
   try {
     await db.run(
-      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'github', ?, ?, 0, ?, ?, ?, '{}')",
+      "INSERT INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'github', ?, ?, 0, ?, ?, ?, '{}') ON CONFLICT (source, external_id) DO NOTHING",
       [id, issue.title, (issue.body || '').slice(0, 500), extId, issue.html_url, JSON.stringify((issue.labels || []).map(l => l.name)), now, now]
     );
   } catch (err) {
@@ -498,6 +498,7 @@ async function _addJira(db, data, text) {
   try {
     const cfg = tryDecryptCfg(row.config_encrypted);
     jiraUrl = cfg.url;
+    const jiraEmail = cfg.email || '';
     jiraToken = cfg.token;
   } catch { return { message: 'Failed to read Jira config.', done: true }; }
 
@@ -505,7 +506,7 @@ async function _addJira(db, data, text) {
   try {
     const resp = await fetch(`${jiraUrl}/rest/api/3/issue/${issueKey}`, {
       headers: {
-        Authorization: `Basic ${Buffer.from(`user:${jiraToken}`).toString('base64')}`,
+        Authorization: `Basic ${Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64')}`,
         Accept: 'application/json',
       },
     });
@@ -521,7 +522,7 @@ async function _addJira(db, data, text) {
   const desc = (issue.fields?.description?.content?.[0]?.content?.[0]?.text || '').slice(0, 500);
   try {
     await db.run(
-      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'jira', ?, ?, 0, '[]', ?, ?, '{}')",
+      "INSERT INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'jira', ?, ?, 0, '[]', ?, ?, '{}') ON CONFLICT (source, external_id) DO NOTHING",
       [id, title, desc, issueKey, `${jiraUrl}/browse/${issueKey}`, now, now]
     );
   } catch (err) {
@@ -559,7 +560,7 @@ async function _addBeads(db, data, text) {
   const now = new Date().toISOString();
   try {
     await db.run(
-      "INSERT OR IGNORE INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'beads', ?, ?, 0, '[]', ?, ?, '{}')",
+      "INSERT INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'beads', ?, ?, 0, '[]', ?, ?, '{}') ON CONFLICT (source, external_id) DO NOTHING",
       [id, task.title || taskId, (task.description || '').slice(0, 500), taskId, task.url || `${endpoint}/tasks/${taskId}`, now, now]
     );
   } catch (err) {
@@ -578,7 +579,7 @@ const config_set_channel = {
   async step(db, conv, userText) {
     const channel = userText.trim().replace(/^#/, '');
     if (!channel) return { message: 'Channel name cannot be empty:', done: false, data: getData(conv), step: 0 };
-    await db.run("INSERT OR REPLACE INTO config (key, value) VALUES ('mm_channel', ?)", [channel]);
+    await db.run(`INSERT INTO config (key, value) VALUES ('mm_channel', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value`, [channel]);
     return { message: `Notification channel set to **#${channel}**.`, done: true };
   },
 };
@@ -594,7 +595,7 @@ const config_set_sync_interval = {
   async step(db, conv, userText) {
     const val = parseInt(userText.trim(), 10);
     if (isNaN(val) || val < 10) return { message: 'Enter a number ≥ 10:', done: false, data: getData(conv), step: 0 };
-    await db.run("INSERT OR REPLACE INTO config (key, value) VALUES ('sync_interval_seconds', ?)", [String(val)]);
+    await db.run(`INSERT INTO config (key, value) VALUES ('sync_interval_seconds', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value`, [String(val)]);
     return { message: `Sync interval set to **${val}s**. Restart server to apply.`, done: true };
   },
 };

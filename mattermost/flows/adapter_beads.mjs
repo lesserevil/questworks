@@ -53,8 +53,9 @@ export async function step(ctx, stepNum, message, data) {
       const now = new Date().toISOString();
 
       await db.run(`
-        INSERT OR REPLACE INTO adapters_config (id, type, name, config_encrypted, created_at, status)
+        INSERT INTO adapters_config (id, type, name, config_encrypted, created_at, status)
         VALUES (?, 'beads', ?, ?, ?, 'ok')
+        ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, config_encrypted=EXCLUDED.config_encrypted, status=EXCLUDED.status
       `, [name, name, encryptJson({
         endpoint: data.endpoint,
         token: data.token,

@@ -60,8 +60,9 @@ export async function step(ctx, stepNum, message, data) {
       });
 
       await db.run(`
-        INSERT OR REPLACE INTO adapters_config (id, type, name, config_encrypted, created_at, status)
+        INSERT INTO adapters_config (id, type, name, config_encrypted, created_at, status)
         VALUES (?, 'github', ?, ?, ?, 'ok')
+        ON CONFLICT (id) DO UPDATE SET name=EXCLUDED.name, config_encrypted=EXCLUDED.config_encrypted, status=EXCLUDED.status
       `, [name, name, configEncrypted, now]);
 
       adapters.set(name, new GitHubAdapter(name, {
