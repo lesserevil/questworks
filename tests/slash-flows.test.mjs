@@ -190,79 +190,38 @@ describe('T2 — Immediate flows (done:true on start)', () => {
   });
 });
 
-// ── T3 — adapter_add_github flow ─────────────────────────────────────────────
+// ── T3 — adapter_add_github dialog flow ────────────────────────────────────────
 
 describe('T3 — Flow: adapter_add_github', () => {
-  test('start returns step 1 prompt with done:false', async () => {
+  test('start returns dialog:true with dialogDef', async () => {
     const db = makeDb();
     const r = await flows.adapter_add_github.start(db, 'u1', 'c1', '');
-    assert.equal(r.done, false);
-    assert.ok(r.message.toLowerCase().includes('step 1'));
-  });
-
-  test('step 0 rejects invalid repo format', async () => {
-    const db = makeDb();
-    const r = await flows.adapter_add_github.step(db, makeConv({ step: 0 }), 'bad-format');
-    assert.equal(r.done, false);
-    assert.equal(r.step, 0);
-  });
-
-  test('step 0 accepts valid owner/repo', async () => {
-    const db = makeDb();
-    const r = await flows.adapter_add_github.step(db, makeConv({ step: 0 }), 'owner/repo');
-    assert.equal(r.done, false);
-    assert.equal(r.step, 1);
-    assert.equal(r.data.repo, 'owner/repo');
-  });
-
-  test('step 1 rejects empty token', async () => {
-    const db = makeDb();
-    const conv = makeConv({ step: 1, data: JSON.stringify({ repo: 'owner/repo' }) });
-    const r = await flows.adapter_add_github.step(db, conv, '');
-    assert.equal(r.done, false);
-    assert.equal(r.step, 1);
-  });
-
-  test('step 1 encrypts token in data', async () => {
-    const db = makeDb();
-    const conv = makeConv({ step: 1, data: JSON.stringify({ repo: 'owner/repo' }) });
-    const r = await flows.adapter_add_github.step(db, conv, 'ghp_mytoken');
-    assert.equal(r.done, false);
-    assert.equal(r.step, 2);
-    assert.ok(r.data.token, 'token stored');
-    assert.ok(r.data.token !== 'ghp_mytoken', 'token must be encrypted, not plaintext');
-  });
-
-  test('step 2 rejects empty label', async () => {
-    const db = makeDb();
-    const conv = makeConv({ step: 2, data: JSON.stringify({ repo: 'owner/repo', token: 'enc:xxx' }) });
-    const r = await flows.adapter_add_github.step(db, conv, '');
-    assert.equal(r.done, false);
-    assert.equal(r.step, 2);
-  });
-
-  test('step 3 with empty name uses default, inserts adapter', async () => {
-    const db = makeDb();
-    // Need a real encrypted token so decrypt() in step 3 works
-    const encTok = encrypt('ghp_realtoken');
-    const conv = makeConv({ step: 3, data: JSON.stringify({ repo: 'owner/repo', token: encTok, label: 'questworks' }) });
-    const r = await flows.adapter_add_github.step(db, conv, '');
+    assert.equal(r.dialog, true);
     assert.equal(r.done, true);
-    assert.ok(r.message.includes('owner-repo'), 'default name derived from repo');
-    const row = db.raw.prepare("SELECT * FROM adapters_config WHERE type='github'").get();
-    assert.ok(row, 'adapter row inserted');
-    assert.ok(!row.config_encrypted.includes('ghp_realtoken'), 'token not in plaintext in DB');
+    assert.ok(r.dialogDef, 'should have dialogDef');
+    assert.equal(r.dialogDef.title, 'Add GitHub Adapter');
+    assert.ok(Array.isArray(r.dialogDef.elements), 'dialogDef should have elements array');
+    assert.equal(r.dialogDef.elements.length, 4);
   });
 
-  test('step 3 with custom name uses it', async () => {
+  test('step returns redirect message', async () => {
     const db = makeDb();
-    const encTok = encrypt('ghp_realtoken');
-    const conv = makeConv({ step: 3, data: JSON.stringify({ repo: 'owner/repo', token: encTok, label: 'questworks' }) });
-    const r = await flows.adapter_add_github.step(db, conv, 'my-adapter');
+    const r = await flows.adapter_add_github.step(db, makeConv({ step: 0 }), 'anything');
     assert.equal(r.done, true);
-    assert.ok(r.message.includes('my-adapter'));
+    assert.ok(r.message.includes('/qw adapter add github'));
+  });
+
+  test('dialogDef contains required fields', async () => {
+    const db = makeDb();
+    const r = await flows.adapter_add_github.start(db, 'u1', 'c1', '');
+    const names = r.dialogDef.elements.map(e => e.name);
+    assert.ok(names.includes('repo'), 'should have repo field');
+    assert.ok(names.includes('token'), 'should have token field');
+    assert.ok(names.includes('label'), 'should have label field');
+    assert.ok(names.includes('name'), 'should have name field');
   });
 });
+
 
 // ── T4 — token masking ────────────────────────────────────────────────────────
 
