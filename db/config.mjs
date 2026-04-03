@@ -6,7 +6,8 @@ export async function getConfig(db, key, defaultValue = null) {
 
 export async function setConfig(db, key, value) {
   await db.run(
-    'INSERT OR REPLACE INTO config (key, value) VALUES (?, ?)',
+    `INSERT INTO config (key, value) VALUES (?, ?)
+     ON CONFLICT (key) DO UPDATE SET value=excluded.value`,
     [key, JSON.stringify(value)]
   );
 }
