@@ -5,9 +5,11 @@
  * Mocking strategy: JiraAdapter accepts an optional `_http` injection
  * via its constructor (test seam). In production, it uses the real http module.
  * Tests T1–T12 per plans/jira-adapter.md.
+ *
+ * Jira Server / Data Center only (API v2, Bearer token).
  */
 
-import { describe, it, mock, beforeEach } from 'node:test';
+import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { JiraAdapter } from '../../adapters/jira.mjs';
 import { AdapterError } from '../../adapters/http.mjs';
@@ -16,8 +18,7 @@ import { AdapterError } from '../../adapters/http.mjs';
 
 function makeAdapter(configOverrides = {}, fetchJsonImpl = async () => ({})) {
   const config = {
-    url: 'https://test.atlassian.net',
-    email: 'bot@example.com',
+    url: 'https://jira.example.com',
     token: 'secret-token',
     project: 'QUEST',
     jql: '',
@@ -44,8 +45,8 @@ function makeIssue(key = 'QUEST-1', fieldOverrides = {}) {
   };
 }
 
-function makeSearchResponse(issues, total, startAt = 0) {
-  return { issues, total, startAt, maxResults: 50 };
+function makeSearchResponse(issues, total) {
+  return { issues, total, startAt: 0, maxResults: 50 };
 }
 
 // --- Test suite ---
@@ -61,7 +62,7 @@ describe('JiraAdapter', () => {
     assert.equal(tasks.length, 1);
     const t = tasks[0];
     assert.equal(t.external_id, 'QUEST-1');
-    assert.equal(t.external_url, 'https://test.atlassian.net/browse/QUEST-1');
+    assert.equal(t.external_url, 'https://jira.example.com/browse/QUEST-1');
     assert.equal(t.title, 'Test issue');
     assert.equal(t.description, 'A description');
     assert.deepEqual(t.labels, ['backend']);
@@ -85,11 +86,11 @@ describe('JiraAdapter', () => {
     const page2Issues = [makeIssue('QUEST-51')];
     let callCount = 0;
 
-    const adapter = makeAdapter({}, async (_url, opts) => {
-      const body = JSON.parse(opts.body);
+    const adapter = makeAdapter({}, async (url) => {
       callCount++;
-      if (body.startAt === 0) return makeSearchResponse(page1Issues, 51);
-      return makeSearchResponse(page2Issues, 51, 50);
+      const params = new URL(url).searchParams;
+      if (params.get('startAt') === '0') return { issues: page1Issues, total: 51, startAt: 0, maxResults: 50 };
+      return { issues: page2Issues, total: 51, startAt: 50, maxResults: 50 };
     });
 
     const tasks = await adapter.pull();
@@ -114,8 +115,8 @@ describe('JiraAdapter', () => {
     assert.ok(errors.length > 0, 'should have logged an error');
   });
 
-  // T5: claim() calls assignee and transition APIs; returns true
-  it('T5: claim() assigns and transitions; returns true', async () => {
+  // T5: claim() calls transition API; returns true (no assignee call on Server)
+  it('T5: claim() transitions to In Progress; returns true', async () => {
     const calls = [];
     const adapter = makeAdapter({}, async (url, opts) => {
       calls.push({ url, method: opts?.method });
@@ -129,7 +130,6 @@ describe('JiraAdapter', () => {
 
     assert.equal(result, true);
     const urls = calls.map(c => c.url);
-    assert.ok(urls.some(u => u.includes('/assignee')), 'should call assignee API');
     assert.ok(urls.some(u => u.includes('/transitions')), 'should call transitions API');
   });
 
@@ -149,20 +149,22 @@ describe('JiraAdapter', () => {
     assert.equal(result, false);
   });
 
-  // T7: update() with comment calls the issue comment API
-  it('T7: update() with comment calls comment API', async () => {
+  // T7: update() with comment calls the issue comment API with plain-text body
+  it('T7: update() with comment posts plain-text comment', async () => {
     const calls = [];
     const adapter = makeAdapter({}, async (url, opts) => {
-      calls.push({ url, method: opts?.method });
+      calls.push({ url, method: opts?.method, body: opts?.body });
       return {};
     });
 
     await adapter.update({ external_id: 'QUEST-7' }, { comment: 'Working on it' });
 
-    assert.ok(
-      calls.some(c => c.url.includes('/comment') && c.method === 'POST'),
-      'should POST to /comment',
-    );
+    const commentCall = calls.find(c => c.url.includes('/comment') && c.method === 'POST');
+    assert.ok(commentCall, 'should POST to /comment');
+    const body = JSON.parse(commentCall.body);
+    // Plain-text comment (Jira Server format), not ADF
+    assert.equal(typeof body.body, 'string', 'comment body should be a plain string');
+    assert.equal(body.body, 'Working on it');
   });
 
   // T8: update() with no comment makes no API calls
@@ -232,6 +234,5 @@ describe('JiraAdapter', () => {
 
     const allLogs = loggedLines.join('\n');
     assert.ok(!allLogs.includes('secret-token'), 'token must not appear in logs');
-    assert.ok(!allLogs.includes('bot@example.com'), 'email must not appear in logs');
   });
 });

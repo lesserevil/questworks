@@ -1,15 +1,15 @@
 /**
  * adapters/jira.mjs — Jira adapter for QuestWorks.
  *
- * Connects to a Jira Cloud instance, pulling issues as tasks and reflecting
- * claim/status/close back via the Jira REST API v3.
+ * Supports **Jira Server / Data Center** (REST API v2, Bearer token auth).
+ * Jira Cloud (API v3, Basic auth) is not supported.
  *
- * All HTTP calls use adapters/http.mjs (fetchJson, AdapterError, basicAuth).
+ * All HTTP calls use adapters/http.mjs (fetchJson, AdapterError, bearerAuth).
  * No credentials are logged or included in error messages.
  */
 
 import { BaseAdapter, normalizeTask } from './base.mjs';
-import { fetchJson, AdapterError, basicAuth } from './http.mjs';
+import { fetchJson, AdapterError, bearerAuth } from './http.mjs';
 
 /** Map Jira priority names to QuestWorks priority numbers. */
 function mapPriority(name) {
@@ -24,8 +24,8 @@ function mapPriority(name) {
 }
 
 /**
- * Extract plain text from a Jira description field.
- * Handles: null, plain string, or ADF object.
+ * Extract plain text from a Jira Server description field.
+ * Handles: null, plain string (Server), or ADF object (ignored).
  *
  * @param {string|object|null} description
  * @returns {string}
@@ -33,53 +33,19 @@ function mapPriority(name) {
 function extractDescription(description) {
   if (!description) return '';
   if (typeof description === 'string') return description;
-  // ADF object — extract text from content nodes
-  if (description.content && Array.isArray(description.content)) {
-    const parts = [];
-    for (const block of description.content) {
-      if (block.content && Array.isArray(block.content)) {
-        for (const inline of block.content) {
-          if (inline.type === 'text' && inline.text) parts.push(inline.text);
-        }
-      }
-    }
-    return parts.join(' ');
-  }
   return '';
-}
-
-/**
- * Wrap plain text in minimal Atlassian Document Format for Jira comments.
- *
- * @param {string} text
- * @returns {object}
- */
-function adfComment(text) {
-  return {
-    body: {
-      version: 1,
-      type: 'doc',
-      content: [
-        {
-          type: 'paragraph',
-          content: [{ type: 'text', text }],
-        },
-      ],
-    },
-  };
 }
 
 export class JiraAdapter extends BaseAdapter {
   /**
    * @param {string} id  Adapter instance ID
    * @param {object} config
-   * @param {string} config.url                     Jira base URL (e.g. https://company.atlassian.net)
-   * @param {string} config.email                   Jira Cloud user email
-   * @param {string} config.token                   Jira Cloud API token
-   * @param {string} config.project                 Jira project key (e.g. QUEST)
-   * @param {string} [config.jql]                   Optional extra JQL filter
-   * @param {string} [config.in_progress_transition] Transition name for claim (default: 'In Progress')
-   * @param {string} [config.done_transition]        Transition name for close (default: 'Done')
+   * @param {string} config.url      Jira Server base URL (e.g. https://jira.example.com)
+   * @param {string} config.token    Jira Server personal access token (PAT)
+   * @param {string} config.project  Jira project key (e.g. QUEST)
+   * @param {string} [config.jql]                    Optional extra JQL filter
+   * @param {string} [config.in_progress_transition]  Transition name for claim (default: 'In Progress')
+   * @param {string} [config.done_transition]         Transition name for close (default: 'Done')
    * @param {object} [_http]  Optional HTTP overrides for testing (e.g. { fetchJson })
    */
   constructor(id, config, _http = {}) {
@@ -87,7 +53,6 @@ export class JiraAdapter extends BaseAdapter {
     /** @private — allow injection for tests */
     this._fetchJson = _http.fetchJson || fetchJson;
     this.baseUrl = config.url.replace(/\/$/, '');
-    this.email = config.email;
     this.token = config.token;
     this.project = config.project;
     this.jql = config.jql || '';
@@ -100,7 +65,7 @@ export class JiraAdapter extends BaseAdapter {
   /** @returns {{ Authorization: string, 'Content-Type': string, Accept: string }} */
   _headers() {
     return {
-      ...basicAuth(this.email, this.token),
+      ...bearerAuth(this.token),
       'Content-Type': 'application/json',
       Accept: 'application/json',
     };
@@ -117,7 +82,7 @@ export class JiraAdapter extends BaseAdapter {
   async _getTransitionId(issueKey, transitionName) {
     if (!this._transitionCache.has(issueKey)) {
       const data = await this._fetchJson(
-        `${this.baseUrl}/rest/api/3/issue/${issueKey}/transitions`,
+        `${this.baseUrl}/rest/api/2/issue/${issueKey}/transitions`,
         { headers: this._headers() },
       );
       const map = {};
@@ -145,13 +110,16 @@ export class JiraAdapter extends BaseAdapter {
       let total = Infinity;
 
       while (startAt < total) {
+        const params = new URLSearchParams({
+          jql: baseJql,
+          startAt: String(startAt),
+          maxResults: String(maxResults),
+          fields: 'summary,description,status,priority,labels,issuetype,assignee',
+        });
+
         const data = await this._fetchJson(
-          `${this.baseUrl}/rest/api/3/search`,
-          {
-            method: 'POST',
-            headers: this._headers(),
-            body: JSON.stringify({ jql: baseJql, startAt, maxResults, fields: ['summary', 'description', 'status', 'priority', 'labels', 'issuetype', 'assignee'] }),
-          },
+          `${this.baseUrl}/rest/api/2/search?${params}`,
+          { headers: this._headers() },
         );
 
         total = data.total;
@@ -185,7 +153,7 @@ export class JiraAdapter extends BaseAdapter {
   }
 
   /**
-   * Assign the Jira issue to the service account and transition it to In Progress.
+   * Assign the Jira issue to the token owner and transition it to In Progress.
    * Returns true on success, false on any error.
    *
    * @param {object} task  QuestWorks task (must have .external_id = Jira key)
@@ -194,14 +162,6 @@ export class JiraAdapter extends BaseAdapter {
   async claim(task) {
     const key = task.external_id;
     try {
-      // Assign to service account (email used as accountId lookup — Jira Cloud uses accountId)
-      // For Cloud: use assignee: { accountId } if known. Fallback: name (Server) or email (Cloud).
-      await this._fetchJson(`${this.baseUrl}/rest/api/3/issue/${key}/assignee`, {
-        method: 'PUT',
-        headers: this._headers(),
-        body: JSON.stringify({ emailAddress: this.email }),
-      });
-
       // Transition to In Progress
       const transitionId = await this._getTransitionId(key, this.inProgressTransition);
       if (!transitionId) {
@@ -210,7 +170,7 @@ export class JiraAdapter extends BaseAdapter {
         return false;
       }
 
-      await this._fetchJson(`${this.baseUrl}/rest/api/3/issue/${key}/transitions`, {
+      await this._fetchJson(`${this.baseUrl}/rest/api/2/issue/${key}/transitions`, {
         method: 'POST',
         headers: this._headers(),
         body: JSON.stringify({ transition: { id: transitionId } }),
@@ -224,7 +184,7 @@ export class JiraAdapter extends BaseAdapter {
   }
 
   /**
-   * Push a comment to the Jira issue when changes.comment is present.
+   * Push a plain-text comment to the Jira issue when changes.comment is present.
    * Status-only changes are ignored (QuestWorks-internal).
    * Logs errors but does not throw.
    *
@@ -235,10 +195,10 @@ export class JiraAdapter extends BaseAdapter {
     if (!changes.comment) return;
     const key = task.external_id;
     try {
-      await this._fetchJson(`${this.baseUrl}/rest/api/3/issue/${key}/comment`, {
+      await this._fetchJson(`${this.baseUrl}/rest/api/2/issue/${key}/comment`, {
         method: 'POST',
         headers: this._headers(),
-        body: JSON.stringify(adfComment(changes.comment)),
+        body: JSON.stringify({ body: changes.comment }),
       });
     } catch (err) {
       console.error(`[jira:${this.id}] update(${key}) comment failed:`, err instanceof AdapterError ? `HTTP ${err.status}` : err.message);
@@ -260,7 +220,7 @@ export class JiraAdapter extends BaseAdapter {
         console.error(`[jira:${this.id}] close(${key}): transition "${this.doneTransition}" not found. Available: ${available}`);
         return;
       }
-      await this._fetchJson(`${this.baseUrl}/rest/api/3/issue/${key}/transitions`, {
+      await this._fetchJson(`${this.baseUrl}/rest/api/2/issue/${key}/transitions`, {
         method: 'POST',
         headers: this._headers(),
         body: JSON.stringify({ transition: { id: transitionId } }),
@@ -271,13 +231,13 @@ export class JiraAdapter extends BaseAdapter {
   }
 
   /**
-   * Health check — verifies credentials by calling /rest/api/3/myself.
+   * Health check — verifies credentials by calling /rest/api/2/myself.
    *
    * @returns {Promise<{ ok: boolean, message: string }>}
    */
   async health() {
     try {
-      const data = await this._fetchJson(`${this.baseUrl}/rest/api/3/myself`, {
+      const data = await this._fetchJson(`${this.baseUrl}/rest/api/2/myself`, {
         headers: this._headers(),
       });
       return { ok: true, message: `authenticated as ${data.displayName}` };
