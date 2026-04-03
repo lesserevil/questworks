@@ -168,6 +168,39 @@ export function createTaskRoutes(db, notifier, adapters) {
     res.json({ ok: true });
   });
 
+  // PATCH /tasks/:id — update task fields
+  router.patch('/:id', async (req, res) => {
+    const task = await db.queryOne('SELECT * FROM tasks WHERE id = ?', [req.params.id]);
+    if (!task) return res.status(404).json({ error: 'not found' });
+    const allowed = ['title', 'description', 'assignee', 'priority', 'labels', 'metadata'];
+    const updates = {};
+    for (const key of allowed) {
+      if (Object.prototype.hasOwnProperty.call(req.body || {}, key)) {
+        updates[key] = key === 'labels' || key === 'metadata' ? JSON.stringify(req.body[key]) : req.body[key];
+      }
+    }
+    if (Object.keys(updates).length === 0) {
+      return res.status(400).json({ error: 'no valid fields provided' });
+    }
+    const now = new Date().toISOString();
+    const setClauses = Object.keys(updates).map(k => `${k}=?`).join(', ');
+    await db.run(
+      `UPDATE tasks SET ${setClauses}, updated_at=? WHERE id=?`,
+      [...Object.values(updates), now, task.id]
+    );
+    await recordHistory(db, task.id, (req.body && req.body.agent) || 'api', 'update', null, null);
+    const updated = await db.queryOne('SELECT * FROM tasks WHERE id = ?', [task.id]);
+    res.json(deserializeTask(updated));
+  });
+
+  // DELETE /tasks/:id
+  router.delete('/:id', async (req, res) => {
+    const task = await db.queryOne('SELECT * FROM tasks WHERE id = ?', [req.params.id]);
+    if (!task) return res.status(404).json({ error: 'not found' });
+    await db.run('DELETE FROM tasks WHERE id = ?', [task.id]);
+    res.json({ ok: true, id: task.id });
+  });
+
   // GET /tasks/:id/history
   router.get('/:id/history', async (req, res) => {
     const history = await db.query(

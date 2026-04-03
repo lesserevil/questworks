@@ -27,6 +27,28 @@ export function createAdapterRoutes(db, adapterRegistry, scheduler) {
     res.json(results);
   });
 
+  // GET /adapters/:id — adapter detail
+  router.get('/:id', async (req, res) => {
+    const adapter = adapterRegistry.get(req.params.id);
+    if (!adapter) return res.status(404).json({ error: 'adapter not found' });
+    const state = await db.queryOne('SELECT * FROM adapter_state WHERE adapter_id = ?', [req.params.id]);
+    let health;
+    try {
+      health = await adapter.health();
+    } catch (err) {
+      health = { ok: false, message: err.message };
+    }
+    res.json({
+      id: req.params.id,
+      type: adapter.constructor.name.replace('Adapter', '').toLowerCase(),
+      health,
+      last_sync: state?.last_sync || null,
+      last_error: state?.last_error || null,
+      task_count: state?.task_count || 0,
+      status: state?.status || 'unknown',
+    });
+  });
+
   // POST /adapters/:id/sync — manual pull
   router.post('/:id/sync', async (req, res) => {
     const adapter = adapterRegistry.get(req.params.id);
