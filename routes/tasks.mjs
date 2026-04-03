@@ -197,6 +197,7 @@ export function createTaskRoutes(db, notifier, adapters) {
   router.delete('/:id', async (req, res) => {
     const task = await db.queryOne('SELECT * FROM tasks WHERE id = ?', [req.params.id]);
     if (!task) return res.status(404).json({ error: 'not found' });
+    await db.run('DELETE FROM task_history WHERE task_id = ?', [task.id]);
     await db.run('DELETE FROM tasks WHERE id = ?', [task.id]);
     res.json({ ok: true, id: task.id });
   });
