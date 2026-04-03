@@ -82,8 +82,8 @@ const adapter_add_github = {
       const rawToken = decrypt(data.token);
       const cfg = { repo: data.repo, token: rawToken, label_filter: data.label };
       await db.run(
-        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, 'github', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
+        'INSERT INTO adapters_config (id, type, name, config_encrypted, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, 'github', name, encrypt(JSON.stringify(cfg)), 'active', new Date().toISOString()]
       );
       return { message: `GitHub adapter **${name}** added (\`${id.slice(0, 8)}\`). Sync runs on next scheduled interval.`, done: true };
     }
@@ -119,8 +119,8 @@ const adapter_add_beads = {
       const id = randomUUID();
       const cfg = { endpoint: data.endpoint, token: decrypt(data.token), board_id: data.board_id };
       await db.run(
-        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, 'beads', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
+        'INSERT INTO adapters_config (id, type, name, config_encrypted, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, 'beads', name, encrypt(JSON.stringify(cfg)), 'active', new Date().toISOString()]
       );
       return { message: `Beads adapter **${name}** added (\`${id.slice(0, 8)}\`).`, done: true };
     }
@@ -156,8 +156,8 @@ const adapter_add_jira = {
       const id = randomUUID();
       const cfg = { url: data.url, token: decrypt(data.token), project: data.project };
       await db.run(
-        'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
-        [id, 'jira', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]
+        'INSERT INTO adapters_config (id, type, name, config_encrypted, status, created_at) VALUES (?, ?, ?, ?, ?, ?)',
+        [id, 'jira', name, encrypt(JSON.stringify(cfg)), 'active', new Date().toISOString()]
       );
       return { message: `Jira adapter **${name}** added (\`${id.slice(0, 8)}\`).`, done: true };
     }
