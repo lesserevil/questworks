@@ -122,7 +122,7 @@ export async function handleDialogSubmit(db, flowName, submission, adapters, sch
     const name = rawName?.trim() || `jira-${project.trim().toLowerCase()}`;
     const id = randomUUID();
     const cfg = { url: url.trim(), token: token.trim(), project: project.trim().toUpperCase() };
-    await db.run('INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+    await db.run(`INSERT INTO adapters_config (id, type, name, config_encrypted, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)`,
       [id, 'jira', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]);
     if (adapters) { const { JiraAdapter } = await import('../../adapters/jira.mjs'); adapters.set(id, new JiraAdapter(id, cfg)); }
     if (scheduler && !scheduler._timer) scheduler.start();
@@ -137,7 +137,7 @@ export async function handleDialogSubmit(db, flowName, submission, adapters, sch
     const name = rawName?.trim() || `github-${slug}`;
     const id = randomUUID();
     const cfg = { repo: repo.trim(), token: token.trim(), label_filter: label.trim() };
-    await db.run('INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+    await db.run(`INSERT INTO adapters_config (id, type, name, config_encrypted, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)`,
       [id, 'github', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]);
     if (adapters) { const { GitHubAdapter } = await import('../../adapters/github.mjs'); adapters.set(id, new GitHubAdapter(id, cfg)); }
     if (scheduler && !scheduler._timer) scheduler.start();
@@ -150,7 +150,7 @@ export async function handleDialogSubmit(db, flowName, submission, adapters, sch
     const name = rawName?.trim() || `beads-${board_id.trim()}`;
     const id = randomUUID();
     const cfg = { endpoint: endpoint.trim(), token: token.trim(), board_id: board_id.trim() };
-    await db.run('INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+    await db.run(`INSERT INTO adapters_config (id, type, name, config_encrypted, status, created_at) VALUES (?, ?, ?, ?, 'active', ?)`,
       [id, 'beads', name, encrypt(JSON.stringify(cfg)), new Date().toISOString()]);
     if (adapters) { const { BeadsAdapter } = await import('../../adapters/beads.mjs'); adapters.set(id, new BeadsAdapter(id, cfg)); }
     if (scheduler && !scheduler._timer) scheduler.start();
