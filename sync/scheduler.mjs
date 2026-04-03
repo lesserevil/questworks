@@ -119,13 +119,13 @@ export class SyncScheduler {
       }
 
       await this.db.run(
-        `INSERT OR REPLACE INTO adapter_state (adapter_id, last_sync, task_count, status) VALUES (?, ?, ?, 'ok')`,
+        `INSERT INTO adapter_state (adapter_id, last_sync, task_count, status) VALUES (?, ?, ?, 'ok') ON CONFLICT(adapter_id) DO UPDATE SET last_sync=EXCLUDED.last_sync, task_count=EXCLUDED.task_count, status=EXCLUDED.status`,
         [adapterId, now, count]
       );
 
     } catch (err) {
       await this.db.run(
-        `INSERT OR REPLACE INTO adapter_state (adapter_id, last_sync, last_error, status) VALUES (?, ?, ?, 'error')`,
+        `INSERT INTO adapter_state (adapter_id, last_sync, last_error, status) VALUES (?, ?, ?, 'error') ON CONFLICT(adapter_id) DO UPDATE SET last_sync=EXCLUDED.last_sync, last_error=EXCLUDED.last_error, status=EXCLUDED.status`,
         [adapterId, now, err.message]
       );
       throw err;

@@ -1,6 +1,6 @@
 export async function saveAdapterConfig(db, { id, type, name, configEncrypted }) {
   await db.run(
-    'INSERT OR REPLACE INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?)',
+    'INSERT INTO adapters_config (id, type, name, config_encrypted, created_at) VALUES (?, ?, ?, ?, ?) ON CONFLICT(id) DO UPDATE SET type=EXCLUDED.type, name=EXCLUDED.name, config_encrypted=EXCLUDED.config_encrypted',
     [id, type, name, configEncrypted, new Date().toISOString()]
   );
 }
