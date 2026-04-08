@@ -100,8 +100,9 @@ export class JiraAdapter extends BaseAdapter {
    * @returns {Promise<object[]>}
    */
   async pull() {
-    const baseJql = `project=${this.project} AND statusCategory != Done ORDER BY created ASC` +
-      (this.jql ? ` AND ${this.jql}` : '');
+    const conditions = [`project=${this.project}`, 'statusCategory != Done'];
+    if (this.jql) conditions.push(this.jql);
+    const baseJql = conditions.join(' AND ') + ' ORDER BY created ASC';
     const maxResults = 50;
     const tasks = [];
 

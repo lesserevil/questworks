@@ -16,7 +16,7 @@ No existing Postgres data to migrate. No production data in either backend yet. 
 
 ## Approach
 
-Introduce a **db adapter layer** (`db/index.mjs`) that presents a single interface to the rest of the application. All SQL-executing modules (`db/migrations.mjs`, `routes/tasks.mjs`, `routes/adapters.mjs`, `sync/scheduler.mjs`, `mattermost/notify.mjs`) will import from `db/index.mjs` rather than instantiating `Database` directly.
+Introduce a **db adapter layer** (`db/index.mjs`) that presents a single interface to the rest of the application. All SQL-executing modules (`db/migrations.mjs`, `routes/tasks.mjs`, `routes/adapters.mjs`, `sync/scheduler.mjs`, `slack/notify.mjs`) will import from `db/index.mjs` rather than instantiating `Database` directly.
 
 Two implementations:
 - `db/sqlite.mjs` — wraps `better-sqlite3` (existing behavior)
@@ -85,7 +85,7 @@ db/
   migrations.mjs         UPDATED — use db/index.mjs interface; run correct schema
 ```
 
-All existing callers (`routes/`, `sync/`, `mattermost/`) will be updated to import from `db/index.mjs` and use the async interface.
+All existing callers (`routes/`, `sync/`, `slack/`) will be updated to import from `db/index.mjs` and use the async interface.
 
 ---
 

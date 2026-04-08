@@ -11,7 +11,7 @@ GitHub Issues    ──────▶  adapters/          ──────▶
 Jira             ──────▶  sync/scheduler     ──────▶  POST /tasks/:id/claim
 Beads            ──────▶  db/ (SQLite)       ──────▶  POST /tasks/:id/status
                           routes/            ◀──────  POST /tasks/:id/complete
-                          mattermost/notify
+                          slack/notify
 ```
 
 ### Task Lifecycle
@@ -61,8 +61,14 @@ questworks/
     adapters.mjs          Adapter management + manual sync
   sync/
     scheduler.mjs         Periodic pull from all adapters
-  mattermost/
+  slack/
     notify.mjs            Post task cards, update threads
+    slash.mjs             HTTP slash command router (POST /slash)
+    interactions.mjs      Slack modal submission handler
+    socket.mjs            Socket Mode WebSocket client
+    events.mjs            Slack Events API router
+    flows/index.mjs       All /qw slash command flows (Block Kit modals)
+    api.mjs               Shared Slack API helpers
   dashboard/              Legacy WQ dashboard (keep as-is)
   questbus/               QuestBus message bus (keep as-is)
   questbus-plugin/        OpenClaw plugin for bus integration (keep as-is)
@@ -75,7 +81,7 @@ questworks/
 ```bash
 # 1. Copy and edit config
 cp config.yaml.example config.yaml
-# Edit config.yaml — set adapter credentials, Mattermost URL, etc.
+# Edit config.yaml — set adapter credentials, Slack token, etc.
 
 # 2. Install dependencies
 npm install
@@ -101,10 +107,11 @@ adapters:
       token: $GITHUB_TOKEN
       label_filter: "quest-team"
 
-mattermost:
-  url: $MM_URL
-  token: $MM_BOT_TOKEN
-  channel: paperwork
+slack:
+  token: $SLACK_TOKEN
+  signing_secret: $SLACK_SIGNING_SECRET
+  app_token: $SLACK_APP_TOKEN   # xapp-... required for Socket Mode; omit for HTTP endpoints
+  channel: questworks
 
 sync:
   interval_seconds: 60
@@ -122,6 +129,9 @@ server:
 | `QUESTWORKS_DB` | Path to SQLite database | `./questworks.db` |
 | `QUESTWORKS_TOKEN` | Bearer token for API auth | none (auth disabled) |
 | `PORT` | HTTP listen port | `8788` |
+| `SLACK_TOKEN` | Slack bot token (`xoxb-...`) | — |
+| `SLACK_SIGNING_SECRET` | Slack signing secret (for request verification) | — |
+| `SLACK_APP_TOKEN` | Slack app-level token (`xapp-...`, enables Socket Mode) | — |
 | `DASHBOARD_DIR` | Path to dashboard static files | `./dashboard` |
 | `BUS_PATH` | Path to QuestBus JSONL log | `./questbus/bus.jsonl` |
 
@@ -186,8 +196,9 @@ docker run -d \
   -v /data/questworks:/data \
   -e QUESTWORKS_TOKEN=my-secret-token \
   -e GITHUB_TOKEN=ghp_... \
-  -e MM_URL=https://mattermost.example.com \
-  -e MM_BOT_TOKEN=... \
+  -e SLACK_TOKEN=xoxb-... \
+  -e SLACK_SIGNING_SECRET=... \
+  -e SLACK_APP_TOKEN=xapp-...  \
   -v /path/to/config.yaml:/app/config.yaml \
   questworks
 ```

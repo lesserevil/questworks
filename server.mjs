@@ -11,11 +11,10 @@ import { GitHubAdapter } from './adapters/github.mjs';
 import { JiraAdapter } from './adapters/jira.mjs';
 import { BeadsAdapter } from './adapters/beads.mjs';
 import { SyncScheduler } from './sync/scheduler.mjs';
-import { MattermostNotifier } from './mattermost/notify.mjs';
-import { MattermostBot } from './mattermost/bot.mjs';
-import { createSlashRouter, handleConversationReply } from './mattermost/slash.mjs';
-import { decryptJson } from './mattermost/crypto.mjs';
-import { startWebSocket } from './mattermost/websocket.mjs';
+import { SlackNotifier } from './slack/notify.mjs';
+import { createSlashRouter, handleConversationReply } from './slack/slash.mjs';
+import { createEventsRouter } from './slack/events.mjs';
+import { startSocketMode } from './slack/socket.mjs';
 import { ManualAdapter } from './adapters/manual.mjs';
 import { createTaskRoutes } from './routes/tasks.mjs';
 import { createAdapterRoutes } from './routes/adapters.mjs';
@@ -29,7 +28,7 @@ function loadConfig() {
   const configPath = process.env.QUESTWORKS_CONFIG || join(__dirname, 'config.yaml');
   if (!existsSync(configPath)) {
     console.warn(`[config] No config.yaml found at ${configPath}, using defaults`);
-    return { adapters: [], mattermost: {}, sync: { interval_seconds: 60 }, server: { port: 8788 } };
+    return { adapters: [], slack: {}, sync: { interval_seconds: 60 }, server: { port: 8788 } };
   }
   const raw = readFileSync(configPath, 'utf8');
   const expanded = raw.replace(/\$(\w+)/g, (_, name) => process.env[name] || '');
@@ -74,24 +73,38 @@ async function main() {
   const adapters = buildAdapters(config.adapters);
   await loadDbAdapters(db, adapters);
 
-  const mmConfig = config.mattermost || {};
-  const mmUrl = process.env.MM_URL || mmConfig.url || '';
-  const mmToken = process.env.MM_BOT_TOKEN || mmConfig.token || '';
+  const slackConfig = config.slack || {};
+  const slackToken = process.env.SLACK_TOKEN || slackConfig.token || '';
+  const slackSigningSecret = process.env.SLACK_SIGNING_SECRET || slackConfig.signing_secret || '';
+  const slackAppToken = process.env.SLACK_APP_TOKEN || slackConfig.app_token || '';
 
-  const notifier = new MattermostNotifier({ url: mmUrl, token: mmToken, channel: mmConfig.channel });
-  const bot = new MattermostBot({ url: mmUrl, token: mmToken });
-
+  const notifier = new SlackNotifier({ token: slackToken, channel: slackConfig.channel });
   const syncInterval = config.sync?.interval_seconds || 60;
   const scheduler = new SyncScheduler(db, adapters, notifier, syncInterval);
 
+  const slackOpts = { token: slackToken, signingSecret: slackSigningSecret };
+
+  // Socket Mode — if SLACK_APP_TOKEN is set, use WebSocket instead of HTTP endpoints
+  if (slackAppToken) {
+    await startSocketMode(db, adapters, scheduler, { token: slackToken, appToken: slackAppToken });
+    console.log('[questworks] Slack Socket Mode active (no public URL needed)');
+  }
+
   const app = express();
+
+  // Mount Slack HTTP routes BEFORE global express.json() so their own body parsers
+  // can capture the raw body needed for request signature verification.
+  // These are used when Socket Mode is NOT active (no SLACK_APP_TOKEN).
+  app.use('/slash', createSlashRouter(db, adapters, scheduler, slackOpts));
+  app.use('/slack', createEventsRouter(db, handleConversationReply, slackOpts));
+
   app.use(express.json());
 
   // Auth middleware (optional — skip if no token configured)
   const AUTH_TOKEN = process.env.QUESTWORKS_TOKEN || config.server?.auth_token;
   app.use((req, res, next) => {
     if (!AUTH_TOKEN) return next();
-    if (req.path === '/health' || req.path === '/' || req.path.startsWith('/slash')) return next();
+    if (req.path === '/health' || req.path === '/' || req.path.startsWith('/slash') || req.path.startsWith('/slack/')) return next();
     const auth = req.headers.authorization;
     if (!auth || auth !== `Bearer ${AUTH_TOKEN}`) {
       return res.status(401).json({ error: 'unauthorized' });
@@ -102,7 +115,6 @@ async function main() {
   // Routes
   app.use('/tasks', createTaskRoutes(db, notifier, adapters));
   app.use('/adapters', createAdapterRoutes(db, adapters, scheduler));
-  app.use('/slash', createSlashRouter(db, adapters, scheduler));
 
   app.get('/health', (req, res) => {
     res.json({
@@ -156,7 +168,6 @@ async function main() {
     console.log(`[questworks] DB backend: ${db.backend} (${dbLabel})`);
     console.log(`[questworks] Adapters: ${[...adapters.keys()].join(', ') || 'none'}`);
     if (adapters.size > 0) scheduler.start();
-    startWebSocket(db, handleConversationReply);
   });
 }
 

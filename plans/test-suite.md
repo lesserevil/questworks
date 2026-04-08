@@ -158,7 +158,7 @@ Mock `adapters/http.mjs` module.
 
 ### 8. Slash Command Parser
 
-File: `tests/mattermost/slash-parser.test.mjs`
+File: `tests/slack/slash-flows.test.mjs` (implemented — see `slash-flows.md` for full test matrix)
 
 **Test cases:**
 - `/qw task list` routes to `task_list` flow

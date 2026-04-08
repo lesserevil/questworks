@@ -101,13 +101,13 @@ export class SyncScheduler {
             metadata: typeof row.metadata === 'string' ? JSON.parse(row.metadata || '{}') : (row.metadata ?? {}),
           };
 
-          // Skip if we already have a Mattermost post for this task
-          if (deserialized.metadata.mm_post_id) continue;
+          // Skip if we already have a Slack post for this task
+          if (deserialized.metadata.slack_ts) continue;
 
           this.notifier.onNewTask(deserialized)
-            .then(async (postId) => {
-              if (postId) {
-                const meta = { ...deserialized.metadata, mm_post_id: postId };
+            .then(async (ts) => {
+              if (ts) {
+                const meta = { ...deserialized.metadata, slack_ts: ts };
                 await this.db.run(
                   'UPDATE tasks SET metadata=?, updated_at=? WHERE id=?',
                   [JSON.stringify(meta), new Date().toISOString(), row.id]

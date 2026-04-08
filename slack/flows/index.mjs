@@ -1,12 +1,16 @@
 /**
- * Conversational flow registry for /qw slash commands.
+ * slack/flows/index.mjs — Slash command flow registry for QuestWorks.
  *
  * Each flow exports:
- *   start(db, userId, channelId, args) → { message, done }
+ *   start(db, userId, channelId, args) → { message, done } | { modal: true, done: true, modalDef }
  *   step(db, conv, userText)           → { message, done, step?, data? }
+ *
+ * Adapter-add flows use Slack Block Kit modals.
+ * Multi-step conversational flows use the standard message/reply pattern.
  */
-import { randomUUID } from 'crypto';
-import { encrypt, decrypt } from '../crypto.mjs';
+
+import { randomUUID } from 'node:crypto';
+import { encrypt, decrypt } from '../../db/crypto.mjs';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -19,7 +23,7 @@ function tryDecryptCfg(encStr) {
   try { return JSON.parse(decrypt(encStr)); } catch { return {}; }
 }
 
-function maskToken(token) {
+export function maskToken(token) {
   if (!token || String(token).length < 4) return '****';
   return '...' + String(token).slice(-4);
 }
@@ -32,7 +36,7 @@ function isSkip(text) {
 function fmtTasks(tasks) {
   if (!tasks.length) return '_No tasks found._';
   return tasks.map((t, i) =>
-    `${i + 1}. \`${t.id.slice(0, 8)}\` **${t.title.slice(0, 50)}** — ${t.status} [${t.source}]`
+    `${i + 1}. \`${t.id.slice(0, 8)}\` *${t.title.slice(0, 50)}* — ${t.status} [${t.source}]`
   ).join('\n');
 }
 
@@ -43,75 +47,25 @@ async function fmtAdapters(db) {
     const cfg = tryDecryptCfg(a.config_encrypted);
     const tok = maskToken(cfg.token);
     const target = cfg.repo || cfg.url || cfg.endpoint || '—';
-    return `${i + 1}. \`${a.id}\` **${a.name}** [${a.type}] ${target} token=${tok} status=${a.status}`;
+    return `${i + 1}. \`${a.id}\` *${a.name}* [${a.type}] ${target} token=${tok} status=${a.status}`;
   }).join('\n');
 }
 
-// ── adapter_add_github (dialog-based) ────────────────────────────────────────
+// ── Block Kit helpers ─────────────────────────────────────────────────────────
 
-const adapter_add_github = {
-  async start(db, userId, channelId, args) {
-    return {
-      dialog: true,
-      done: true,
-      dialogDef: {
-        title: 'Add GitHub Adapter',
-        submit_label: 'Add',
-        elements: [
-          { display_name: 'Repository', name: 'repo', type: 'text', placeholder: 'owner/repo', optional: false },
-          { display_name: 'Personal Access Token', name: 'token', type: 'text', placeholder: 'ghp_...', optional: false },
-          { display_name: 'Label filter', name: 'label', type: 'text', placeholder: 'questworks', optional: false },
-          { display_name: 'Adapter name (optional)', name: 'name', type: 'text', optional: true },
-        ],
-      },
-    };
-  },
-  async step(db, conv, userText) { return { message: 'Use `/qw adapter add github` to open the dialog.', done: true }; },
-};
-
-// ── adapter_add_beads (dialog-based) ──────────────────────────────────────────
-
-const adapter_add_beads = {
-  async start(db, userId, channelId, args) {
-    return {
-      dialog: true,
-      done: true,
-      dialogDef: {
-        title: 'Add Beads Adapter',
-        submit_label: 'Add',
-        elements: [
-          { display_name: 'Endpoint URL', name: 'endpoint', type: 'text', placeholder: 'https://...', optional: false },
-          { display_name: 'API Token', name: 'token', type: 'text', placeholder: 'Paste your Beads API token', optional: false },
-          { display_name: 'Board ID', name: 'board_id', type: 'text', placeholder: 'board-id', optional: false },
-          { display_name: 'Adapter name (optional)', name: 'name', type: 'text', optional: true },
-        ],
-      },
-    };
-  },
-  async step(db, conv, userText) { return { message: 'Use `/qw adapter add beads` to open the dialog.', done: true }; },
-};
-
-// ── adapter_add_jira (dialog-based) ───────────────────────────────────────────
-
-const adapter_add_jira = {
-  async start(db, userId, channelId, args) {
-    return {
-      dialog: true,
-      done: true,
-      dialogDef: {
-        title: 'Add Jira Adapter',
-        submit_label: 'Add',
-        elements: [
-          { display_name: 'Jira URL', name: 'url', type: 'text', placeholder: 'https://yourco.atlassian.net', optional: false },
-          { display_name: 'API Token', name: 'token', type: 'text', placeholder: 'Paste your Jira API token', optional: false },
-          { display_name: 'Project Key', name: 'project', type: 'text', placeholder: 'QUEST', optional: false },
-          { display_name: 'Adapter name (optional)', name: 'name', type: 'text', optional: true },
-        ],
-      },
-    };
-  },
-  async step(db, conv, userText) { return { message: 'Use `/qw adapter add jira` to open the dialog.', done: true }; },
-};
+function inputBlock(blockId, label, placeholder, optional = false) {
+  return {
+    type: 'input',
+    block_id: blockId,
+    optional,
+    label: { type: 'plain_text', text: label },
+    element: {
+      type: 'plain_text_input',
+      action_id: 'input',
+      placeholder: { type: 'plain_text', text: placeholder },
+    },
+  };
+}
 
 // ── handleDialogSubmit ────────────────────────────────────────────────────────
 
@@ -127,7 +81,7 @@ export async function handleDialogSubmit(db, flowName, submission, adapters, sch
     if (adapters) { const { JiraAdapter } = await import('../../adapters/jira.mjs'); adapters.set(id, new JiraAdapter(id, cfg)); }
     if (scheduler && !scheduler._timer) scheduler.start();
     if (scheduler) scheduler.syncAdapter(id).catch(err => console.error(`[dialog] jira sync failed: ${err.message}`));
-    return `✅ Jira adapter **${name}** added (\`${id.slice(0, 8)}\`). Syncing in background…`;
+    return `✅ Jira adapter *${name}* added (\`${id.slice(0, 8)}\`). Syncing in background…`;
   }
   if (flowName === 'adapter_add_github') {
     const { repo, token, label, name: rawName } = submission;
@@ -142,7 +96,7 @@ export async function handleDialogSubmit(db, flowName, submission, adapters, sch
     if (adapters) { const { GitHubAdapter } = await import('../../adapters/github.mjs'); adapters.set(id, new GitHubAdapter(id, cfg)); }
     if (scheduler && !scheduler._timer) scheduler.start();
     if (scheduler) scheduler.syncAdapter(id).catch(err => console.error(`[dialog] github sync failed: ${err.message}`));
-    return `✅ GitHub adapter **${name}** added (\`${id.slice(0, 8)}\`). Syncing in background…`;
+    return `✅ GitHub adapter *${name}* added (\`${id.slice(0, 8)}\`). Syncing in background…`;
   }
   if (flowName === 'adapter_add_beads') {
     const { endpoint, token, board_id, name: rawName } = submission;
@@ -155,26 +109,96 @@ export async function handleDialogSubmit(db, flowName, submission, adapters, sch
     if (adapters) { const { BeadsAdapter } = await import('../../adapters/beads.mjs'); adapters.set(id, new BeadsAdapter(id, cfg)); }
     if (scheduler && !scheduler._timer) scheduler.start();
     if (scheduler) scheduler.syncAdapter(id).catch(err => console.error(`[dialog] beads sync failed: ${err.message}`));
-    return `✅ Beads adapter **${name}** added (\`${id.slice(0, 8)}\`). Syncing in background…`;
+    return `✅ Beads adapter *${name}* added (\`${id.slice(0, 8)}\`). Syncing in background…`;
   }
   return `Unknown dialog flow: ${flowName}`;
 }
 
+// ── adapter_add_github (Slack Block Kit modal) ────────────────────────────────
+
+const adapter_add_github = {
+  async start() {
+    return {
+      modal: true, done: true,
+      modalDef: {
+        type: 'modal',
+        title: { type: 'plain_text', text: 'Add GitHub Adapter' },
+        submit: { type: 'plain_text', text: 'Add' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          inputBlock('repo', 'Repository', 'owner/repo'),
+          inputBlock('token', 'Personal Access Token', 'ghp_...'),
+          inputBlock('label', 'Label filter', 'questworks'),
+          inputBlock('name', 'Adapter name (optional)', 'github-owner-repo', true),
+        ],
+      },
+    };
+  },
+  async step() { return { message: 'Use `/qw adapter add github` to open the form.', done: true }; },
+};
+
+// ── adapter_add_beads (Slack Block Kit modal) ─────────────────────────────────
+
+const adapter_add_beads = {
+  async start() {
+    return {
+      modal: true, done: true,
+      modalDef: {
+        type: 'modal',
+        title: { type: 'plain_text', text: 'Add Beads Adapter' },
+        submit: { type: 'plain_text', text: 'Add' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          inputBlock('endpoint', 'Endpoint URL', 'https://...'),
+          inputBlock('token', 'API Token', 'Paste your Beads API token'),
+          inputBlock('board_id', 'Board ID', 'board-id'),
+          inputBlock('name', 'Adapter name (optional)', 'beads-board-id', true),
+        ],
+      },
+    };
+  },
+  async step() { return { message: 'Use `/qw adapter add beads` to open the form.', done: true }; },
+};
+
+// ── adapter_add_jira (Slack Block Kit modal) ──────────────────────────────────
+
+const adapter_add_jira = {
+  async start() {
+    return {
+      modal: true, done: true,
+      modalDef: {
+        type: 'modal',
+        title: { type: 'plain_text', text: 'Add Jira Adapter' },
+        submit: { type: 'plain_text', text: 'Add' },
+        close: { type: 'plain_text', text: 'Cancel' },
+        blocks: [
+          inputBlock('url', 'Jira URL', 'https://jira.example.com'),
+          inputBlock('token', 'Personal Access Token', 'Paste your Jira PAT'),
+          inputBlock('project', 'Project Key', 'QUEST'),
+          inputBlock('jql', 'Extra JQL filter (optional)', 'issuetype = Bug', true),
+          inputBlock('name', 'Adapter name (optional)', 'jira-quest', true),
+        ],
+      },
+    };
+  },
+  async step() { return { message: 'Use `/qw adapter add jira` to open the form.', done: true }; },
+};
+
 // ── adapter_list ──────────────────────────────────────────────────────────────
 
 const adapter_list = {
-  async start(db, userId, channelId, args) {
-    return { message: `**Configured Adapters**\n${await fmtAdapters(db)}`, done: true };
+  async start(db) {
+    return { message: `*Configured Adapters*\n${await fmtAdapters(db)}`, done: true };
   },
-  async step(db, conv, userText) { return { message: 'Done.', done: true }; },
+  async step() { return { message: 'Done.', done: true }; },
 };
 
 // ── adapter_remove ────────────────────────────────────────────────────────────
 
 const adapter_remove = {
-  async start(db, userId, channelId, args) {
+  async start(db) {
     const list = await fmtAdapters(db);
-    return { message: `**Adapters:**\n${list}\n\nEnter the adapter ID to remove (or \`cancel\`):`, done: false };
+    return { message: `*Adapters:*\n${list}\n\nEnter the adapter ID to remove (or \`cancel\`):`, done: false };
   },
   async step(db, conv, userText) {
     const data = getData(conv);
@@ -187,7 +211,7 @@ const adapter_remove = {
         return { message: `Adapter \`${text}\` not found. Enter a valid ID or \`cancel\`:`, done: false, data, step: 0 };
       }
       return {
-        message: `Remove **${row.name}** (${row.type}, \`${row.id}\`)?\nType **yes** to confirm or **no** to cancel:`,
+        message: `Remove *${row.name}* (${row.type}, \`${row.id}\`)?\nType *yes* to confirm or *no* to cancel:`,
         done: false,
         data: { adapterId: row.id, adapterName: row.name },
         step: 1,
@@ -197,7 +221,7 @@ const adapter_remove = {
     if (conv.step === 1) {
       if (text.toLowerCase() !== 'yes') return { message: 'Removal cancelled.', done: true };
       await db.run('DELETE FROM adapters_config WHERE id=?', [data.adapterId]);
-      return { message: `Adapter **${data.adapterName}** removed.`, done: true };
+      return { message: `Adapter *${data.adapterName}* removed.`, done: true };
     }
 
     return { message: 'Unexpected state.', done: true };
@@ -207,9 +231,9 @@ const adapter_remove = {
 // ── adapter_sync ──────────────────────────────────────────────────────────────
 
 const adapter_sync = {
-  async start(db, userId, channelId, args) {
+  async start(db) {
     const list = await fmtAdapters(db);
-    return { message: `**Adapters:**\n${list}\n\nEnter adapter ID to sync, or \`all\`:`, done: false };
+    return { message: `*Adapters:*\n${list}\n\nEnter adapter ID to sync, or \`all\`:`, done: false };
   },
   async step(db, conv, userText) {
     const text = userText.trim();
@@ -223,27 +247,27 @@ const adapter_sync = {
     if (!row) {
       return { message: `Adapter \`${text}\` not found. Enter a valid ID or \`all\`:`, done: false, data: getData(conv), step: 0 };
     }
-    return { message: `Sync queued for **${row.name}**. Tasks will update on next sync cycle.`, done: true };
+    return { message: `Sync queued for *${row.name}*. Tasks will update on next sync cycle.`, done: true };
   },
 };
 
 // ── task_list ─────────────────────────────────────────────────────────────────
 
 const task_list = {
-  async start(db, userId, channelId, args) {
+  async start(db) {
     const tasks = await db.query("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at ASC LIMIT 20", []);
-    return { message: `**Open Tasks (${tasks.length})**\n${fmtTasks(tasks)}`, done: true };
+    return { message: `*Open Tasks (${tasks.length})*\n${fmtTasks(tasks)}`, done: true };
   },
-  async step(db, conv, userText) { return { message: 'Done.', done: true }; },
+  async step() { return { message: 'Done.', done: true }; },
 };
 
 // ── task_claim ────────────────────────────────────────────────────────────────
 
 const task_claim = {
-  async start(db, userId, channelId, args) {
+  async start(db) {
     const tasks = await db.query("SELECT * FROM tasks WHERE status='open' ORDER BY priority DESC, created_at DESC", []);
     if (!tasks.length) return { message: 'No open tasks available to claim.', done: true };
-    return { message: `**Open Tasks:**\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to claim:`, done: false };
+    return { message: `*Open Tasks:*\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to claim:`, done: false };
   },
   async step(db, conv, userText) {
     const data = getData(conv);
@@ -260,7 +284,7 @@ const task_claim = {
     }
 
     if (!task) {
-      return { message: `Task not found. Enter a valid number or ID prefix (or \`cancel\`):`, done: false, data, step: 0 };
+      return { message: 'Task not found. Enter a valid number or ID prefix (or `cancel`):', done: false, data, step: 0 };
     }
 
     const now = new Date().toISOString();
@@ -270,22 +294,22 @@ const task_claim = {
     );
 
     if (result.changes === 0) {
-      return { message: `**${task.title}** was just claimed by someone else.`, done: true };
+      return { message: `*${task.title}* was just claimed by someone else.`, done: true };
     }
-    return { message: `You claimed **${task.title}**!${task.external_url ? `\n${task.external_url}` : ''}`, done: true };
+    return { message: `You claimed *${task.title}*!${task.external_url ? `\n${task.external_url}` : ''}`, done: true };
   },
 };
 
 // ── task_done ─────────────────────────────────────────────────────────────────
 
 const task_done = {
-  async start(db, userId, channelId, args) {
+  async start(db, userId) {
     const tasks = await db.query(
       "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC",
       [userId]
     );
     if (!tasks.length) return { message: 'You have no claimed or in-progress tasks.', done: true };
-    return { message: `**Your Tasks:**\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to mark done:`, done: false };
+    return { message: `*Your Tasks:*\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to mark done:`, done: false };
   },
   async step(db, conv, userText) {
     const data = getData(conv);
@@ -304,8 +328,8 @@ const task_done = {
       } else {
         task = tasks.find(t => t.id === text || t.id.startsWith(text));
       }
-      if (!task) return { message: `Task not found. Enter a valid number or ID (or \`cancel\`):`, done: false, data, step: 0 };
-      return { message: `Add a note for **${task.title}** (optional, Enter to skip):`, done: false, data: { taskId: task.id, taskTitle: task.title }, step: 1 };
+      if (!task) return { message: 'Task not found. Enter a valid number or ID (or `cancel`):', done: false, data, step: 0 };
+      return { message: `Add a note for *${task.title}* (optional, Enter to skip):`, done: false, data: { taskId: task.id, taskTitle: task.title }, step: 1 };
     }
 
     if (conv.step === 1) {
@@ -317,7 +341,7 @@ const task_done = {
           [data.taskId, conv.user_id, text, now]
         );
       }
-      return { message: `**${data.taskTitle}** marked as done.`, done: true };
+      return { message: `*${data.taskTitle}* marked as done.`, done: true };
     }
 
     return { message: 'Unexpected state.', done: true };
@@ -327,13 +351,13 @@ const task_done = {
 // ── task_block ────────────────────────────────────────────────────────────────
 
 const task_block = {
-  async start(db, userId, channelId, args) {
+  async start(db, userId) {
     const tasks = await db.query(
       "SELECT * FROM tasks WHERE assignee=? AND status IN ('claimed','in_progress') ORDER BY updated_at DESC",
       [userId]
     );
     if (!tasks.length) return { message: 'You have no in-progress tasks.', done: true };
-    return { message: `**Your Tasks:**\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to mark blocked:`, done: false };
+    return { message: `*Your Tasks:*\n${fmtTasks(tasks)}\n\nEnter task number or ID prefix to mark blocked:`, done: false };
   },
   async step(db, conv, userText) {
     const data = getData(conv);
@@ -352,8 +376,8 @@ const task_block = {
       } else {
         task = tasks.find(t => t.id === text || t.id.startsWith(text));
       }
-      if (!task) return { message: `Task not found. Enter a valid number or ID (or \`cancel\`):`, done: false, data, step: 0 };
-      return { message: `What's blocking **${task.title}**?`, done: false, data: { taskId: task.id, taskTitle: task.title }, step: 1 };
+      if (!task) return { message: 'Task not found. Enter a valid number or ID (or `cancel`):', done: false, data, step: 0 };
+      return { message: `What's blocking *${task.title}*?`, done: false, data: { taskId: task.id, taskTitle: task.title }, step: 1 };
     }
 
     if (conv.step === 1) {
@@ -364,7 +388,7 @@ const task_block = {
         "INSERT INTO task_history (task_id, actor, action, note, ts) VALUES (?, ?, 'blocked', ?, ?)",
         [data.taskId, conv.user_id, reason, now]
       );
-      return { message: `**${data.taskTitle}** marked as blocked.\nReason: ${reason}`, done: true };
+      return { message: `*${data.taskTitle}* marked as blocked.\nReason: ${reason}`, done: true };
     }
 
     return { message: 'Unexpected state.', done: true };
@@ -374,8 +398,8 @@ const task_block = {
 // ── task_add ──────────────────────────────────────────────────────────────────
 
 const task_add = {
-  async start(db, userId, channelId, args) {
-    return { message: 'Add a task. Source type?\nOptions: **github**, **jira**, **beads**, **manual**', done: false };
+  async start() {
+    return { message: 'Add a task. Source type?\nOptions: *github*, *jira*, *beads*, *manual*', done: false };
   },
   async step(db, conv, userText) {
     const data = getData(conv);
@@ -384,7 +408,7 @@ const task_add = {
     if (conv.step === 0) {
       const t = text.toLowerCase();
       if (!['github', 'jira', 'beads', 'manual'].includes(t)) {
-        return { message: 'Please choose: **github**, **jira**, **beads**, or **manual**', done: false, data, step: 0 };
+        return { message: 'Please choose: *github*, *jira*, *beads*, or *manual*', done: false, data, step: 0 };
       }
       const prompts = {
         github: 'Enter `owner/repo#number` or a GitHub issue URL:',
@@ -407,7 +431,7 @@ const task_add = {
 
     if (conv.step === 2 && data.type === 'manual') {
       return {
-        message: 'Priority: **1** (high), **2** (medium), **3** (low) — Enter for default (2):',
+        message: 'Priority: *1* (high), *2* (medium), *3* (low) — Enter for default (2):',
         done: false,
         data: { ...data, description: isSkip(text) ? null : text },
         step: 3,
@@ -426,7 +450,7 @@ const task_add = {
         "INSERT INTO tasks (id, title, description, status, source, external_id, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'manual', ?, ?, '[]', ?, ?, '{}')",
         [id, data.title, data.description || '', id, priority, now, now]
       );
-      return { message: `Task **${data.title}** created (\`${id.slice(0, 8)}\`).`, done: true };
+      return { message: `Task *${data.title}* created (\`${id.slice(0, 8)}\`).`, done: true };
     }
 
     return { message: 'Unexpected state.', done: true };
@@ -474,7 +498,7 @@ async function _addGithub(db, data, text) {
     if (err.message.includes('UNIQUE')) return { message: `Task for ${extId} already exists.`, done: true };
     return { message: `DB error: ${err.message}`, done: true };
   }
-  return { message: `Imported GitHub issue: **${issue.title}**\n${issue.html_url}`, done: true };
+  return { message: `Imported GitHub issue: *${issue.title}*\n${issue.html_url}`, done: true };
 }
 
 async function _addJira(db, data, text) {
@@ -492,15 +516,14 @@ async function _addJira(db, data, text) {
   try {
     const cfg = tryDecryptCfg(row.config_encrypted);
     jiraUrl = cfg.url;
-    const jiraEmail = cfg.email || '';
     jiraToken = cfg.token;
   } catch { return { message: 'Failed to read Jira config.', done: true }; }
 
   let issue;
   try {
-    const resp = await fetch(`${jiraUrl}/rest/api/3/issue/${issueKey}`, {
+    const resp = await fetch(`${jiraUrl}/rest/api/2/issue/${issueKey}`, {
       headers: {
-        Authorization: `Basic ${Buffer.from(`${jiraEmail}:${jiraToken}`).toString('base64')}`,
+        Authorization: `Bearer ${jiraToken}`,
         Accept: 'application/json',
       },
     });
@@ -513,7 +536,7 @@ async function _addJira(db, data, text) {
   const id = randomUUID();
   const now = new Date().toISOString();
   const title = issue.fields?.summary || issueKey;
-  const desc = (issue.fields?.description?.content?.[0]?.content?.[0]?.text || '').slice(0, 500);
+  const desc = (typeof issue.fields?.description === 'string' ? issue.fields.description : '').slice(0, 500);
   try {
     await db.run(
       "INSERT INTO tasks (id, title, description, status, source, external_id, external_url, priority, labels, created_at, updated_at, metadata) VALUES (?, ?, ?, 'open', 'jira', ?, ?, 0, '[]', ?, ?, '{}') ON CONFLICT (source, external_id) DO NOTHING",
@@ -523,7 +546,7 @@ async function _addJira(db, data, text) {
     if (err.message.includes('UNIQUE')) return { message: `Task for ${issueKey} already exists.`, done: true };
     return { message: `DB error: ${err.message}`, done: true };
   }
-  return { message: `Imported Jira issue: **${title}**\n${jiraUrl}/browse/${issueKey}`, done: true };
+  return { message: `Imported Jira issue: *${title}*\n${jiraUrl}/browse/${issueKey}`, done: true };
 }
 
 async function _addBeads(db, data, text) {
@@ -561,62 +584,65 @@ async function _addBeads(db, data, text) {
     if (err.message.includes('UNIQUE')) return { message: `Task for beads:${taskId} already exists.`, done: true };
     return { message: `DB error: ${err.message}`, done: true };
   }
-  return { message: `Imported Beads task: **${task.title || taskId}**`, done: true };
+  return { message: `Imported Beads task: *${task.title || taskId}*`, done: true };
 }
 
 // ── config_set_channel ────────────────────────────────────────────────────────
 
 const config_set_channel = {
-  async start(db, userId, channelId, args) {
-    return { message: 'Enter the Mattermost channel name for task notifications (e.g. `paperwork`):', done: false };
+  async start() {
+    return { message: 'Enter the Slack channel name for task notifications (e.g. `questworks`):', done: false };
   },
   async step(db, conv, userText) {
     const channel = userText.trim().replace(/^#/, '');
-    if (!channel) return { message: 'Channel name cannot be empty:', done: false, data: getData(conv), step: 0 };
-    await db.run(`INSERT INTO config (key, value) VALUES ('mm_channel', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value`, [channel]);
-    return { message: `Notification channel set to **#${channel}**.`, done: true };
+    if (!channel) return { message: 'Channel name cannot be empty:', done: false, data: {}, step: 0 };
+    await db.run(
+      `INSERT INTO config (key, value) VALUES ('slack_channel', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value`,
+      [channel]
+    );
+    return { message: `Notification channel set to *#${channel}*.`, done: true };
   },
 };
 
 // ── config_set_sync_interval ──────────────────────────────────────────────────
 
 const config_set_sync_interval = {
-  async start(db, userId, channelId, args) {
+  async start(db) {
     const row = await db.queryOne("SELECT value FROM config WHERE key='sync_interval_seconds'", []);
     const current = row?.value || '60';
-    return { message: `Current sync interval: **${current}s**\nEnter new interval in seconds (min 10):`, done: false };
+    return { message: `Current sync interval: *${current}s*\nEnter new interval in seconds (min 10):`, done: false };
   },
   async step(db, conv, userText) {
     const val = parseInt(userText.trim(), 10);
     if (isNaN(val) || val < 10) return { message: 'Enter a number ≥ 10:', done: false, data: getData(conv), step: 0 };
     await db.run(`INSERT INTO config (key, value) VALUES ('sync_interval_seconds', ?) ON CONFLICT (key) DO UPDATE SET value=excluded.value`, [String(val)]);
-    return { message: `Sync interval set to **${val}s**. Restart server to apply.`, done: true };
+    return { message: `Sync interval set to *${val}s*. Restart server to apply.`, done: true };
   },
 };
 
 // ── config_show ───────────────────────────────────────────────────────────────
 
 const config_show = {
-  async start(db, userId, channelId, args) {
+  async start(db) {
     const rows = await db.query('SELECT key, value FROM config ORDER BY key', []);
     if (!rows.length) return { message: 'No configuration set.', done: true };
     const lines = rows.map(r => {
       const v = (r.key.includes('token') || r.key.includes('secret')) ? `...${r.value.slice(-4)}` : r.value;
-      return `**${r.key}**: ${v}`;
+      return `*${r.key}*: ${v}`;
     });
-    return { message: `**Configuration**\n${lines.join('\n')}`, done: true };
+    return { message: `*Configuration*\n${lines.join('\n')}`, done: true };
   },
-  async step(db, conv, userText) { return { message: 'Done.', done: true }; },
+  async step() { return { message: 'Done.', done: true }; },
 };
 
 // ── help ──────────────────────────────────────────────────────────────────────
 
 const help = {
-  async start(db, userId, channelId, args) {
+  async start() {
     return {
-      message: `**QuestWorks** \`/qw\` commands
+      message: `*QuestWorks* \`/qw\` commands
 
-**Adapters**
+*Adapters*
 \`/qw adapter add github\` — Add a GitHub Issues adapter
 \`/qw adapter add beads\`  — Add a Beads board adapter
 \`/qw adapter add jira\`   — Add a Jira project adapter
@@ -624,14 +650,14 @@ const help = {
 \`/qw adapter remove\`     — Remove an adapter
 \`/qw adapter sync\`       — Trigger a manual sync
 
-**Tasks**
+*Tasks*
 \`/qw task list\`   — List open tasks
 \`/qw task claim\`  — Claim an open task
 \`/qw task done\`   — Mark your task as done
 \`/qw task block\`  — Mark your task as blocked
 \`/qw task add\`    — Add a task (GitHub/Jira/Beads/manual)
 
-**Config**
+*Config*
 \`/qw config set channel\`        — Set notification channel
 \`/qw config set sync-interval\`  — Set sync interval (seconds)
 \`/qw config show\`               — Show current configuration
@@ -640,7 +666,7 @@ const help = {
       done: true,
     };
   },
-  async step(db, conv, userText) { return { message: 'Done.', done: true }; },
+  async step() { return { message: 'Done.', done: true }; },
 };
 
 // ── Export ────────────────────────────────────────────────────────────────────
@@ -662,3 +688,21 @@ export const flows = {
   config_show,
   help,
 };
+
+// Extract flat submission object from Slack's view.state.values structure:
+// { block_id: { action_id: { type, value } } }  →  { block_id: value }
+function extractSubmission(stateValues) {
+  const submission = {};
+  for (const [blockId, actions] of Object.entries(stateValues || {})) {
+    const inputAction = actions['input'];
+    submission[blockId] = inputAction
+      ? (inputAction.value ?? '')
+      : (Object.values(actions)[0]?.value ?? '');
+  }
+  return submission;
+}
+
+export async function handleModalSubmit(db, flowName, stateValues, adapters, scheduler) {
+  const submission = extractSubmission(stateValues);
+  return handleDialogSubmit(db, flowName, submission, adapters, scheduler);
+}
